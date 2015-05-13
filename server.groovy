@@ -19,6 +19,10 @@ if(!myOptions) {
 }
 
 def config = new JsonSlurper().parse(new File(myOptions.c))
+if(config.driver) {
+Class.forName(config.driver)
+}
+
 def server = new ServerSocket(myOptions.p.toInteger())
 
 /*
