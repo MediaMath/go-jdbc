@@ -60,6 +60,10 @@ enum GetTypes {
 
 def processResult = {sock->
     sock.withStreams {inputStream,outputStream->
+        java.sql.Connection connection;
+        def stmts = [:]
+        def results = [:]
+        def resultMeta = [:]
         try {
             DataInputStream dataIn = new DataInputStream(inputStream);
             DataOutputStream dataOut = new DataOutputStream(outputStream);
@@ -76,31 +80,35 @@ def processResult = {sock->
             def readString = {
                 int len = dataIn.readInt();
                 byte[] buf = new byte[len];
-                dataIn.readFully(buf);
+                try {
+                    dataIn.readFully(buf);
+                } catch(e) {
+                }
                 return new String(buf,"UTF-8");
             }
 
             // Connect to database
-            java.sql.Connection connection = java.sql.DriverManager.getConnection(config.url,config.user,config.password)
+            connection = java.sql.DriverManager.getConnection(config.url,config.user,config.password)
             connection.setAutoCommit(true)
             connection.setTransactionIsolation(java.sql.Connection.TRANSACTION_SERIALIZABLE)
 
-            def stmts = [:]
-            def results = [:]
 
             writeString("d67c184ff3c42e7b7a0bf2d4bca50340");
             dataOut.flush();
 
-            boolean done = false;
-            while (!done) {
+            
+            byte selector;
+            while (true) {
                 try {
-                    byte selector = dataIn.readByte();
-                    switch (selector) {
-                    case 1: // DONE
-                        done = true;
-                        dataOut.writeByte(1);
+                    selector = dataIn.readByte()
+                    if(selector==-1) {
                         break;
-
+                    }
+                } catch(java.io.EOFException e) {
+                    break;
+                }
+                try {
+                    switch (selector) {
                     case 11: // begin transaction
                         connection.setAutoCommit(false);
                         break;
@@ -125,8 +133,11 @@ def processResult = {sock->
                     case 10: // close result set 
                         String id = readString();
                         java.sql.ResultSet rs = results.get(id);
-                        rs.close();
-                        results.remove(id);
+                        if(rs) {
+                            rs.close();
+                            results.remove(id);
+                            resultMeta.remove(id);
+                        }
                         break;
 
                     case 2: // prepare
@@ -170,22 +181,24 @@ def processResult = {sock->
                         try {
                             boolean r = s.execute();
                             if (r) {
-                            dataOut.writeByte(1);
-                            dataOut.flush(); // need to flush here, due to round-trip in this protocol :-(
-                            java.sql.ResultSet rs = s.getResultSet();
-                            String id2 = readString();
-                            results.put(id2,rs);
-                            java.sql.ResultSetMetaData md = rs.getMetaData();
-                            int n = md.getColumnCount();
-                            dataOut.writeInt(n);
-                            for (int i=0; i<n; i++) {
-                                writeString(md.getColumnName(i+1));
-                                writeString(md.getColumnClassName(i+1));
-                            }
+                                dataOut.writeByte(1);
+                                dataOut.flush(); // need to flush here, due to round-trip in this protocol :-(
+                                java.sql.ResultSet rs = s.getResultSet();
+                                rs.setFetchSize(1000);
+                                String id2 = readString();
+                                results.put(id2,rs);
+                                java.sql.ResultSetMetaData md = rs.getMetaData();
+                                resultMeta.put(id2,md);
+                                int n = md.getColumnCount();
+                                dataOut.writeInt(n);
+                                for (int i=0; i<n; i++) {
+                                    writeString(md.getColumnName(i+1));
+                                    writeString(md.getColumnClassName(i+1));
+                                }
                             } else {
-                            dataOut.writeByte(0);
-                            int c = s.getUpdateCount();
-                            dataOut.writeInt(c);
+                                dataOut.writeByte(0);
+                                int c = s.getUpdateCount();
+                                dataOut.writeInt(c);
                             }
                         } catch (java.sql.SQLException e) {
                             dataOut.writeByte(2);
@@ -194,130 +207,132 @@ def processResult = {sock->
                         break;
                         
                     case 6: // next
+                        int batchSize = dataIn.readInt();
                         String id = readString();
                         java.sql.ResultSet rs = results.get(id);
-                        if (rs.next()) {
-                            dataOut.writeByte(1);
-                        } else {
-                            dataOut.writeByte(0);
-                        }
-                        break;
-                        
-                    case 7: // get
-                        String id = readString();
-                        int ind = dataIn.readInt();
-                        java.sql.ResultSet rs = results.get(id);
-                        switch (dataIn.readByte()) {
-                        case 1: // int
-                            int i = rs.getInt(ind);
-                            if (rs.wasNull()) {
+                        for(int row=0;row<batchSize;row++) {
+                            if (rs.next()) {
+                                dataOut.writeByte(1);
+                            } else {
                                 dataOut.writeByte(0);
-                                continue;
+                                break;
                             }
-                            dataOut.writeByte(1);
-                            dataOut.writeInt(i);
-                            break;
-                            
-                        case 2: // string
-                            String i = rs.getString(ind);
-                            if (rs.wasNull()) {
-                                dataOut.writeByte(0);
-                                continue;
+
+                            java.sql.ResultSetMetaData md = resultMeta.get(id);
+                            int n = md.getColumnCount();
+                            for (int i=1; i<=n; i++) {
+                                switch (md.getColumnClassName(i)) {
+                                case "java.lang.Integer":
+                                    int val = rs.getInt(i);
+                                    if (rs.wasNull()) {
+                                        dataOut.writeByte(0);
+                                        continue;
+                                    }
+                                    dataOut.writeByte(1);
+                                    dataOut.writeInt(val);
+                                    break;
+                                    
+                                case "java.lang.String":
+                                    String val = rs.getString(i);
+                                    if (rs.wasNull()) {
+                                        dataOut.writeByte(0);
+                                        continue;
+                                    }
+                                    dataOut.writeByte(1);
+                                    writeString(val);
+                                    break;
+                                    
+                                case "java.lang.Double":
+                                    double val = rs.getDouble(i);
+                                    if (rs.wasNull()) {
+                                        dataOut.writeByte(0);
+                                        continue;
+                                    }
+                                    dataOut.writeByte(1);
+                                    dataOut.writeDouble(val);
+                                    break;
+                                    
+                                case "java.lang.Float":
+                                    float val = rs.getFloat(i);
+                                    if (rs.wasNull()) {
+                                        dataOut.writeByte(0);
+                                        continue;
+                                    }
+                                    dataOut.writeByte(1);
+                                    dataOut.writeFloat(val);
+                                    break;
+                                    
+                                case "java.sql.Date":
+                                    java.sql.Date val = rs.getDate(i);
+                                    if (rs.wasNull()) {
+                                        dataOut.writeByte(0);
+                                        continue;
+                                    }
+                                    dataOut.writeByte(1);
+                                    dataOut.writeLong(i.getTime());
+                                    break;
+                                    
+                                case "java.sql.Timestamp":
+                                    java.sql.Timestamp val = rs.getTimestamp(i);
+                                    if (rs.wasNull()) {
+                                        dataOut.writeByte(0);
+                                        continue;
+                                    }
+                                    dataOut.writeByte(1);
+                                    dataOut.writeLong(val.getTime());
+                                    break;
+                                    
+                                case "java.lang.Long":
+                                    long val = rs.getLong(i);
+                                    if (rs.wasNull()) {
+                                        dataOut.writeByte(0);
+                                        continue;
+                                    }
+                                    dataOut.writeByte(1);
+                                    dataOut.writeLong(val);
+                                    break;
+                                    
+                                case "java.lang.Short":
+                                    short val = rs.getShort(i);
+                                    if (rs.wasNull()) {
+                                        dataOut.writeByte(0);
+                                        continue;
+                                    }
+                                    dataOut.writeByte(1);
+                                    dataOut.writeShort(val);
+                                    break;
+                                    
+                                case "java.lang.Byte":
+                                    byte val = rs.getByte(i);
+                                    if (rs.wasNull()) {
+                                        dataOut.writeByte(0);
+                                        continue;
+                                    }
+                                    dataOut.writeByte(1);
+                                    dataOut.writeByte(val);
+                                    break;
+                                    
+                                case "java.lang.Boolean":
+                                    boolean val = rs.getBoolean(i);
+                                    if (rs.wasNull()) {
+                                        dataOut.writeByte(0);
+                                        continue;
+                                    }
+                                    dataOut.writeByte(1);
+                                    dataOut.writeByte(val ? 1 : 0);
+                                    break;
+                                    
+                                case "java.math.BigDecimal":
+                                    java.math.BigDecimal val = rs.getBigDecimal(i);
+                                    if (rs.wasNull()) {
+                                        dataOut.writeByte(0);
+                                        continue;
+                                    }
+                                    dataOut.writeByte(1);
+                                    writeString(val.toString());
+                                    break;
+                                }
                             }
-                            dataOut.writeByte(1);
-                            writeString(i);
-                            break;
-                            
-                        case 3: // double
-                            double i = rs.getDouble(ind);
-                            if (rs.wasNull()) {
-                                dataOut.writeByte(0);
-                                continue;
-                            }
-                            dataOut.writeByte(1);
-                            dataOut.writeDouble(i);
-                            break;
-                            
-                        case 4: // float
-                            float i = rs.getFloat(ind);
-                            if (rs.wasNull()) {
-                                dataOut.writeByte(0);
-                                continue;
-                            }
-                            dataOut.writeByte(1);
-                            dataOut.writeFloat(i);
-                            break;
-                            
-                        case 5: // time
-                            java.sql.Date i = rs.getDate(ind);
-                            if (rs.wasNull()) {
-                                dataOut.writeByte(0);
-                                continue;
-                            }
-                            dataOut.writeByte(1);
-                            dataOut.writeLong(i.getTime());
-                            break;
-                            
-                        case 11: // timestamp
-                            java.sql.Timestamp i = rs.getTimestamp(ind);
-                            if (rs.wasNull()) {
-                                dataOut.writeByte(0);
-                                continue;
-                            }
-                            dataOut.writeByte(1);
-                            dataOut.writeLong(i.getTime());
-                            break;
-                            
-                            case 6: // long
-                            long i = rs.getLong(ind);
-                            if (rs.wasNull()) {
-                                dataOut.writeByte(0);
-                                continue;
-                            }
-                            dataOut.writeByte(1);
-                            dataOut.writeLong(i);
-                            break;
-                            
-                        case 7: // short
-                            short i = rs.getShort(ind);
-                            if (rs.wasNull()) {
-                                dataOut.writeByte(0);
-                                continue;
-                            }
-                            dataOut.writeByte(1);
-                            dataOut.writeShort(i);
-                            break;
-                            
-                        case 8: // byte
-                            byte i = rs.getByte(ind);
-                            if (rs.wasNull()) {
-                                dataOut.writeByte(0);
-                                continue;
-                            }
-                            dataOut.writeByte(1);
-                            dataOut.writeByte(i);
-                            break;
-                            
-                        case 9: // boolean
-                            boolean i = rs.getBoolean(ind);
-                            if (rs.wasNull()) {
-                                dataOut.writeByte(0);
-                                continue;
-                            }
-                            dataOut.writeByte(1);
-                            dataOut.writeByte(i ? 1 : 0);
-                            break;
-                            
-                        case 10: // big decimal
-                            java.math.BigDecimal i = rs.getBigDecimal(ind);
-                            if (rs.wasNull()) {
-                                dataOut.writeByte(0);
-                                continue;
-                            }
-                            dataOut.writeByte(1);
-                            writeString(i.toString());
-                            break;
-                            
                         }
                         break;
                         
@@ -331,7 +346,6 @@ def processResult = {sock->
             
         } catch(e) {
             e.printStackTrace()
-            writeError(e)
         }finally {
             // Flush and close outputs and database connection
             try {
@@ -342,6 +356,20 @@ def processResult = {sock->
             if(connection) {
                 connection.close()
             }
+            if(stmts) {
+                try {
+                    stmts.each {k,v->v.close()}
+                } catch(e) {
+                }
+            }
+            if(results) {
+                try {
+                    results.each {k,v->v.close()}
+                } catch(e) {
+                }
+            }
+            
+
         }
     }
     try {

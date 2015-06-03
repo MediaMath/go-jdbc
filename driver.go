@@ -10,8 +10,44 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 )
+
+const (
+	_            = iota
+	COMMAND_DONE = iota
+	COMMAND_PREPARE
+	COMMAND_SETLONG
+	COMMAND_SETSTRING
+	COMMAND_EXECUTE
+	COMMAND_NEXT
+	COMMAND_GET
+	COMMAND_SETDOUBLE
+	COMMAND_CLOSE_STATEMENT
+	COMMAND_CLOSE_RESULT_SET
+	COMMAND_BEGIN_TRANSACTION
+	COMMAND_COMMIT_TRANSACTION
+	COMMAND_ROLLBACK_TRANSACTION
+	COMMAND_SETTIME
+
+	COMMAND_CLOSE_CONNECTION = -1
+)
+
+//const (
+// _        = iota
+// TYPE_INT = iota
+// TYPE_STRING
+// TYPE_DOUBLE
+// TYPE_FLOAT
+// TYPE_TIME
+// TYPE_LONG
+// TYPE_SHORT
+// TYPE_BYTE
+// TYPE_BOOLEAN
+// TYPE_BIG_DECIMAL
+// TYPE_TIMESTAMP
+//)
 
 func init() {
 	sql.Register("jdbc", &Driver{})
@@ -23,6 +59,7 @@ type Driver struct {
 const (
 	PARAM_TIMEOUT          = "timeout"
 	CONNECTION_TEST_STRING = "d67c184ff3c42e7b7a0bf2d4bca50340"
+	BUFFER_SIZE            = 1000
 )
 
 func (j Driver) Open(name string) (driver.Conn, error) {
@@ -31,14 +68,33 @@ func (j Driver) Open(name string) (driver.Conn, error) {
 		return nil, e
 	}
 
-	var newConnection net.Conn
-	if timeoutRaw, ok := u.Query()[PARAM_TIMEOUT]; ok && len(timeoutRaw) > 0 {
+	return &conn{connAddress: u, openStmt: map[string]*stmt{}}, nil
+}
+
+type conn struct {
+	// ch          *driverConnection
+	connAddress  *url.URL
+	openStmt     map[string]*stmt
+	openStmtLock sync.Mutex
+}
+
+func (c *conn) openDriverConnection() (*driverConnection, error) {
+	var (
+		newConnection net.Conn
+		e             error
+	)
+
+	if timeoutRaw, ok := c.connAddress.Query()[PARAM_TIMEOUT]; ok && len(timeoutRaw) > 0 {
 		timeout, e := strconv.ParseInt(timeoutRaw[0], 10, 64)
 		if e == nil {
-			newConnection, e = net.DialTimeout(u.Scheme, u.Host, time.Duration(timeout))
+			newConnection, e = net.DialTimeout(c.connAddress.Scheme, c.connAddress.Host, time.Duration(timeout))
 		}
 	} else {
-		newConnection, e = net.Dial(u.Scheme, u.Host)
+		if newConnection, e = net.Dial(c.connAddress.Scheme, c.connAddress.Host); e == nil {
+			if tcp, ok := newConnection.(*net.TCPConn); ok {
+				e = tcp.SetLinger(-1)
+			}
+		}
 	}
 
 	if e != nil {
@@ -48,7 +104,7 @@ func (j Driver) Open(name string) (driver.Conn, error) {
 		return nil, e
 	}
 
-	dc := &DriverConnection{newConnection}
+	dc := &driverConnection{newConnection}
 	if s, e := dc.ReadString(); e != nil {
 		newConnection.Close()
 		return nil, e
@@ -56,28 +112,37 @@ func (j Driver) Open(name string) (driver.Conn, error) {
 		newConnection.Close()
 	}
 
-	return &conn{dc}, nil
-}
-
-type conn struct {
-	ch *DriverConnection
+	return dc, nil
 }
 
 func (c *conn) Prepare(query string) (driver.Stmt, error) {
-	err := c.ch.WriteByte(2)
+	dc, e := c.openDriverConnection()
+	if e != nil {
+		return nil, e
+	}
+	return c.prepareWithConnection(query, dc)
+}
+
+func (c *conn) prepareWithConnection(query string, dc *driverConnection) (driver.Stmt, error) {
+	err := dc.WriteByte(COMMAND_PREPARE)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := NewV4()
-	err = c.ch.WriteString(id.String())
+	err = dc.WriteString(id.String())
 	if err != nil {
 		return nil, err
 	}
-	err = c.ch.WriteString(query)
+	err = dc.WriteString(query)
 	if err != nil {
 		return nil, err
 	}
-	return &stmt{conn: c, id: id.String(), query: query}, nil
+	s := &stmt{driverConnection: dc, conn: c, id: id.String(), query: query}
+	c.openStmtLock.Lock()
+	defer c.openStmtLock.Unlock()
+	c.openStmt[s.id] = s
+
+	return s, nil
 }
 
 func check(e error) {
@@ -86,46 +151,69 @@ func check(e error) {
 	}
 }
 
-func (c *conn) Close() error {
-	err := c.ch.WriteByte(1)
-	if err != nil {
-		return err
+func (c *conn) Close() (e error) {
+	c.openStmtLock.Lock()
+	defer c.openStmtLock.Unlock()
+	for _, s := range c.openStmt {
+		if err := s.Close(); err != nil {
+		}
 	}
-	_, err = c.ch.ReadByte()
-	check(err)
-	return nil
+	return
+}
+
+func (c *conn) putStmt(s *stmt) {
+	c.openStmtLock.Lock()
+	defer c.openStmtLock.Unlock()
+	delete(c.openStmt, s.id)
 }
 
 func (c *conn) Begin() (driver.Tx, error) {
-	return &tx{c.ch}, c.ch.WriteByte(11)
+	if dc, e := c.openDriverConnection(); e != nil {
+		return nil, e
+	} else {
+		return &tx{c, dc}, dc.WriteByte(11)
+	}
 }
 
 type tx struct {
-	ch *DriverConnection
+	*conn
+	dc *driverConnection
 }
 
 func (t *tx) Commit() error {
-	return t.ch.WriteByte(12)
+	return t.dc.WriteByte(12)
 }
 
 func (t *tx) Rollback() error {
-	return t.ch.WriteByte(13)
+	return t.dc.WriteByte(13)
 }
 
-func (t *tx) Stmt(stmt *sql.Stmt) *sql.Stmt {
-	return stmt
-}
+// Fully implement
+//func (t *tx) Prepare(query string) (sql.Stmt, error) {
+//	return t.prepareWithConnection(query, t.dc)
+//}
 
 type stmt struct {
-	*conn
-	id    string
-	query string
+	*driverConnection
+	conn           *conn
+	id             string
+	query          string
+	closed         bool
+	stmtCloseMutex sync.Mutex
 }
 
-func (s *stmt) Close() error {
-	s.conn.ch.WriteByte(9)
-	s.conn.ch.WriteString(s.id)
-	return nil
+func (s *stmt) Close() (e error) {
+	s.stmtCloseMutex.Lock()
+	defer s.stmtCloseMutex.Unlock()
+	if !s.closed {
+		defer s.driverConnection.Close()
+		defer s.conn.putStmt(s)
+		s.closed = true
+		if e = s.WriteByte(COMMAND_CLOSE_STATEMENT); e == nil {
+			e = s.WriteString(s.id)
+		}
+	}
+	return
 }
 
 func (s *stmt) NumInput() int {
@@ -134,23 +222,23 @@ func (s *stmt) NumInput() int {
 
 func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 	s.stage1(args)
-	s.conn.ch.WriteByte(5)
-	s.conn.ch.WriteString(s.id)
-	b, err := s.conn.ch.ReadByte()
+	s.WriteByte(COMMAND_EXECUTE)
+	s.WriteString(s.id)
+	b, err := s.driverConnection.ReadByte()
 	check(err)
 	id2, _ := NewV4()
 	switch b {
 	case 0:
-		c, err := s.conn.ch.ReadInt32()
+		c, err := s.driverConnection.ReadInt32()
 		check(err)
 		if c < 0 {
 			c = 0
 		}
-		return result{s.conn, id2.String(), int64(c)}, nil
+		return result{s.driverConnection, id2.String(), int64(c)}, nil
 	case 1:
 		panic("didn't expect resultset")
 	case 2:
-		e, err := s.conn.ch.ReadString()
+		e, err := s.driverConnection.ReadString()
 		if err != nil {
 			return nil, err
 		}
@@ -164,25 +252,25 @@ func (s *stmt) stage1(args []driver.Value) {
 	for i, x := range args {
 		switch x := x.(type) {
 		case int64:
-			s.conn.ch.WriteByte(3)
-			s.conn.ch.WriteString(s.id)
-			s.conn.ch.WriteInt32(int32(i + 1))
-			s.conn.ch.WriteInt64(x)
+			s.driverConnection.WriteByte(COMMAND_SETLONG)
+			s.driverConnection.WriteString(s.id)
+			s.driverConnection.WriteInt32(int32(i + 1))
+			s.driverConnection.WriteInt64(x)
 		case string:
-			s.conn.ch.WriteByte(4)
-			s.conn.ch.WriteString(s.id)
-			s.conn.ch.WriteInt32(int32(i + 1))
-			s.conn.ch.WriteString(x)
+			s.driverConnection.WriteByte(COMMAND_SETSTRING)
+			s.driverConnection.WriteString(s.id)
+			s.driverConnection.WriteInt32(int32(i + 1))
+			s.driverConnection.WriteString(x)
 		case float64:
-			s.conn.ch.WriteByte(8)
-			s.conn.ch.WriteString(s.id)
-			s.conn.ch.WriteInt32(int32(i + 1))
-			s.conn.ch.WriteFloat64(x)
+			s.driverConnection.WriteByte(COMMAND_SETDOUBLE)
+			s.driverConnection.WriteString(s.id)
+			s.driverConnection.WriteInt32(int32(i + 1))
+			s.driverConnection.WriteFloat64(x)
 		case time.Time:
-			s.conn.ch.WriteByte(14)
-			s.conn.ch.WriteString(s.id)
-			s.conn.ch.WriteInt32(int32(i + 1))
-			s.conn.ch.WriteInt64(x.UnixNano() / 1000000)
+			s.driverConnection.WriteByte(COMMAND_SETTIME)
+			s.driverConnection.WriteString(s.id)
+			s.driverConnection.WriteInt32(int32(i + 1))
+			s.driverConnection.WriteInt64(x.UnixNano() / 1000000)
 		default:
 			fmt.Printf("unhandled: %T %v\n", x, x)
 		}
@@ -191,32 +279,43 @@ func (s *stmt) stage1(args []driver.Value) {
 
 func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 	s.stage1(args)
-	s.conn.ch.WriteByte(5)
-	s.conn.ch.WriteString(s.id)
-	b, err := s.conn.ch.ReadByte()
+	s.driverConnection.WriteByte(COMMAND_EXECUTE)
+	s.driverConnection.WriteString(s.id)
+	b, err := s.driverConnection.ReadByte()
 	check(err)
 	switch b {
+	// No row
 	case 0:
-		_, err := s.conn.ch.ReadInt32()
+		_, err := s.driverConnection.ReadInt32()
 		check(err)
 		return &norows{}, nil
+
+	// Results
 	case 1:
 		var names, classes []string
 		id2, _ := NewV4()
-		s.conn.ch.WriteString(id2.String())
-		n, err := s.conn.ch.ReadInt32()
+		s.driverConnection.WriteString(id2.String())
+		n, err := s.driverConnection.ReadInt32()
 		check(err)
 		for i := 0; i < int(n); i++ {
-			name, err := s.conn.ch.ReadString()
+			name, err := s.driverConnection.ReadString()
 			check(err)
-			class, err := s.conn.ch.ReadString()
+			class, err := s.driverConnection.ReadString()
 			check(err)
 			names = append(names, name)
 			classes = append(classes, class)
 		}
-		return &rows{s.conn, id2.String(), names, classes}, nil
+		return &rows{
+			driverConnection: s.driverConnection,
+			id:               id2.String(),
+			names:            names,
+			classes:          classes,
+			hasMore:          true,
+		}, nil
+
+	// Error
 	case 2:
-		e, err := s.conn.ch.ReadString()
+		e, err := s.driverConnection.ReadString()
 		if err != nil {
 			return nil, err
 		}
@@ -227,154 +326,176 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 }
 
 type rows struct {
-	*conn
-	id      string
-	names   []string
-	classes []string
+	*driverConnection
+	id         string
+	names      []string
+	classes    []string
+	currentRow int
+	buffer     [][]driver.Value
+	hasMore    bool
+	closed     bool
 }
 
 func (r *rows) Columns() []string {
 	return r.names
 }
-func (r *rows) Close() error {
-	r.conn.ch.WriteByte(10)
-	r.conn.ch.WriteString(r.id)
-	return nil
+func (r *rows) Close() (e error) {
+	if !r.closed {
+		r.closed = true
+		if e = r.WriteByte(COMMAND_CLOSE_RESULT_SET); e == nil {
+			e = r.WriteString(r.id)
+		}
+	}
+	return
 }
+
 func (r *rows) Next(dest []driver.Value) error {
-	r.conn.ch.WriteByte(6)
-	r.conn.ch.WriteString(r.id)
-	b, err := r.conn.ch.ReadByte()
-	check(err)
-	if b == 0 {
+	if l := len(r.buffer); r.currentRow >= l {
+		// Hit the end of this result set
+		if !r.hasMore {
+			return io.EOF
+		} else if e := r.bufferNext(); e != nil {
+			return e
+		}
+	}
+	// Still nothing to give, end of result set
+	if len(r.buffer) == 0 {
 		return io.EOF
 	}
-	for i := range r.names {
-		r.conn.ch.WriteByte(7)
-		r.conn.ch.WriteString(r.id)
-		r.conn.ch.WriteInt32(int32(i + 1))
 
-		dest[i] = nil
+	for i, v := range r.buffer[r.currentRow] {
+		dest[i] = v
+	}
+	r.currentRow = r.currentRow + 1
+	return nil
+}
 
-		switch r.classes[i] {
-		case "java.lang.Integer":
-			r.conn.ch.WriteByte(1)
-			b, err := r.conn.ch.ReadByte()
-			check(err)
-			if b == 1 {
-				v, err := r.conn.ch.ReadInt32()
-				check(err)
-				dest[i] = v
+func (r *rows) bufferNext() error {
+	r.buffer = make([][]driver.Value, 0, BUFFER_SIZE)
+	r.currentRow = 0
+	nameLength := len(r.names)
+
+	r.WriteByte(COMMAND_NEXT)
+	r.WriteInt32(int32(BUFFER_SIZE))
+	r.WriteString(r.id)
+
+	for i := 0; i < BUFFER_SIZE; i++ {
+		if b, err := r.ReadByte(); err != nil {
+			return err
+		} else if b == 0 {
+			r.hasMore = false
+			break
+		}
+
+		dest := make([]driver.Value, nameLength)
+		for i := range r.names {
+
+			dest[i] = nil
+			if b, err := r.ReadByte(); err != nil {
+				return err
+			} else if b != 1 {
+				continue
 			}
-		case "java.math.BigDecimal":
-			r.conn.ch.WriteByte(10)
-			b, err := r.conn.ch.ReadByte()
-			check(err)
-			if b == 1 {
-				v, err := r.conn.ch.ReadString()
-				check(err)
-				r := big.NewRat(0, 1)
-				_, ok := r.SetString(v)
+
+			switch r.classes[i] {
+			case "java.lang.Integer":
+				v, err := r.ReadInt32()
+				if err != nil {
+					return err
+				}
+				dest[i] = v
+
+			case "java.math.BigDecimal":
+				v, err := r.ReadString()
+				if err != nil {
+					return err
+				}
+				rational := big.NewRat(0, 1)
+				_, ok := rational.SetString(v)
 				if !ok {
 					panic("oops: " + v)
 				}
-				f, _ := r.Float64()
+				f, _ := rational.Float64()
 				dest[i] = f
-			}
-		case "java.lang.Long":
-			r.conn.ch.WriteByte(6)
-			b, err := r.conn.ch.ReadByte()
-			check(err)
-			if b == 1 {
-				v, err := r.conn.ch.ReadInt64()
-				check(err)
+
+			case "java.lang.Long":
+				v, err := r.ReadInt64()
+				if err != nil {
+					return err
+				}
 				dest[i] = v
-			}
-		case "java.lang.Short":
-			r.conn.ch.WriteByte(7)
-			b, err := r.conn.ch.ReadByte()
-			check(err)
-			if b == 1 {
-				v, err := r.conn.ch.ReadInt16()
-				check(err)
+
+			case "java.lang.Short":
+				v, err := r.ReadInt16()
+				if err != nil {
+					return err
+				}
 				dest[i] = v
-			}
-		case "java.lang.Byte":
-			r.conn.ch.WriteByte(8)
-			b, err := r.conn.ch.ReadByte()
-			check(err)
-			if b == 1 {
-				v, err := r.conn.ch.ReadByte()
-				check(err)
+
+			case "java.lang.Byte":
+				v, err := r.ReadByte()
+				if err != nil {
+					return err
+				}
 				dest[i] = v
-			}
-		case "java.lang.Boolean":
-			r.conn.ch.WriteByte(9)
-			b, err := r.conn.ch.ReadByte()
-			check(err)
-			if b == 1 {
-				v, err := r.conn.ch.ReadByte()
-				check(err)
+
+			case "java.lang.Boolean":
+				v, err := r.ReadByte()
+				if err != nil {
+					return err
+				}
 				dest[i] = (v == 1)
-			}
-		case "java.sql.Date":
-			r.conn.ch.WriteByte(5)
-			b, err := r.conn.ch.ReadByte()
-			check(err)
-			if b == 1 {
-				v, err := r.conn.ch.ReadInt64()
-				check(err)
+
+			case "java.sql.Date":
+				v, err := r.ReadInt64()
+				if err != nil {
+					return err
+				}
 				t := time.Unix(0, v*1000000)
 				t = t.In(time.UTC)
 				dest[i] = t
-			}
-		case "java.sql.Timestamp":
-			r.conn.ch.WriteByte(11)
-			b, err := r.conn.ch.ReadByte()
-			check(err)
-			if b == 1 {
-				v, err := r.conn.ch.ReadInt64()
-				check(err)
+
+			case "java.sql.Timestamp":
+				v, err := r.ReadInt64()
+				if err != nil {
+					return err
+				}
 				t := time.Unix(0, v*1000000)
 				t = t.In(time.UTC)
 				dest[i] = t
-			}
-		case "java.lang.String":
-			r.conn.ch.WriteByte(2)
-			b, err := r.conn.ch.ReadByte()
-			check(err)
-			if b == 1 {
-				v, err := r.conn.ch.ReadString()
-				check(err)
+
+			case "java.lang.String":
+				v, err := r.ReadString()
+				if err != nil {
+					return err
+				}
 				dest[i] = []byte(v)
-			}
-		case "java.lang.Double":
-			r.conn.ch.WriteByte(3)
-			b, err := r.conn.ch.ReadByte()
-			check(err)
-			if b == 1 {
-				v, err := r.conn.ch.ReadFloat64()
-				check(err)
+
+			case "java.lang.Double":
+				v, err := r.ReadFloat64()
+				if err != nil {
+					return err
+				}
 				dest[i] = v
-			}
-		case "java.lang.Float":
-			r.conn.ch.WriteByte(4)
-			b, err := r.conn.ch.ReadByte()
-			check(err)
-			if b == 1 {
-				v, err := r.conn.ch.ReadFloat32()
-				check(err)
+
+			case "java.lang.Float":
+				v, err := r.ReadFloat32()
+				if err != nil {
+					return err
+				}
 				dest[i] = v
+
+			default:
+				panic(r.classes[i])
 			}
-		default:
-			panic(r.classes[i])
 		}
+		r.buffer = append(r.buffer, dest)
 	}
 	return nil
 }
 
 type result struct {
-	*conn
+	*driverConnection
 	id2 string
 	c   int64
 }
