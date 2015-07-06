@@ -141,7 +141,6 @@ func (c *conn) prepareWithConnection(query string, dc *driverConnection) (driver
 	c.openStmtLock.Lock()
 	defer c.openStmtLock.Unlock()
 	c.openStmt[s.id] = s
-
 	return s, nil
 }
 
@@ -155,8 +154,7 @@ func (c *conn) Close() (e error) {
 	c.openStmtLock.Lock()
 	defer c.openStmtLock.Unlock()
 	for _, s := range c.openStmt {
-		if err := s.Close(); err != nil {
-		}
+		go s.Close()
 	}
 	return
 }

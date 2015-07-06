@@ -53,11 +53,15 @@ func TestJDBC(t *testing.T) {
 	fatalErr(tx.Commit())
 
 	// Select rows
-	rows, err := db.Query("select * from test")
+	rows, err := db.Query("select Id,Title from test")
 	fatalErr(err)
 	defer rows.Close()
+
 	for rows.Next() {
-		record := Test{}
-		fatalErr(rows.Scan(&record.Id, &record.Title))
+		r := Test{}
+		if e := rows.Scan(&r.Id, &r.Title); e != nil {
+			t.Fatal(e)
+		}
 	}
+
 }
