@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 type Test struct {
-	Id    int64
-	Title string
+	Id      int64
+	Title   string
+	Age     int64
+	Created time.Time
 }
 
 func TestJDBC(t *testing.T) {
@@ -25,14 +28,15 @@ func TestJDBC(t *testing.T) {
 	_, err = db.Exec("drop table if exists test;")
 	fatalErr(err)
 
-	_, err = db.Exec("create table test(Id int auto_increment primary key, Title varchar(255))")
+	_, err = db.Exec("create table test(Id int auto_increment primary key, Title varchar(255), Age int, Created datetime)")
 	fatalErr(err)
 
 	// Parallel inserts
 	// TODO: This is very slow currently
+	testTime := time.Now().Round(time.Second)
 	tx, err := db.Begin()
 	fatalErr(err)
-	stmt, err := db.Prepare("insert into test(Title) values(?)")
+	stmt, err := db.Prepare("insert into test(Title,Age,Created) values(?,?,?)")
 	stmt = tx.Stmt(stmt)
 	fatalErr(err)
 	var wg sync.WaitGroup
@@ -40,7 +44,7 @@ func TestJDBC(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		go func(i int) {
 			defer wg.Done()
-			r, err := stmt.Exec(fmt.Sprintf("The %d", i))
+			r, err := stmt.Exec(fmt.Sprintf("The %d", i), i, testTime)
 			fatalErr(err)
 			if a, err := r.RowsAffected(); a != 1 {
 				t.Fatal("Expected 1, got %d", a)
@@ -53,14 +57,24 @@ func TestJDBC(t *testing.T) {
 	fatalErr(tx.Commit())
 
 	// Select rows
-	rows, err := db.Query("select Id,Title from test")
+	rows, err := db.Query("select * from test")
 	fatalErr(err)
 	defer rows.Close()
 
 	for rows.Next() {
 		r := Test{}
-		if e := rows.Scan(&r.Id, &r.Title); e != nil {
+		if e := rows.Scan(&r.Id, &r.Title, &r.Age, &r.Created); e != nil {
 			t.Fatal(e)
+		}
+		expectedTitle := fmt.Sprintf("The %d", r.Age)
+		switch {
+		case r.Id == 0:
+			t.Fatalf("Invalid Id: %+v", r)
+		case r.Title != expectedTitle:
+			t.Fatalf("Expected Title %s but got %s", expectedTitle, r.Title)
+		case !r.Created.Equal(testTime):
+			t.Fatalf("Expected time %v but got %v", testTime, r.Created)
+
 		}
 	}
 
