@@ -30,6 +30,7 @@ const (
 	COMMAND_COMMIT_TRANSACTION
 	COMMAND_ROLLBACK_TRANSACTION
 	COMMAND_SETTIME
+	COMMAND_SETNULL
 
 	COMMAND_CLOSE_CONNECTION = -1
 )
@@ -248,29 +249,33 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 
 func (s *stmt) stage1(args []driver.Value) {
 	for i, x := range args {
-		switch x := x.(type) {
+		switch xT := x.(type) {
 		case int64:
 			s.driverConnection.WriteByte(COMMAND_SETLONG)
 			s.driverConnection.WriteString(s.id)
 			s.driverConnection.WriteInt32(int32(i + 1))
-			s.driverConnection.WriteInt64(x)
+			s.driverConnection.WriteInt64(xT)
 		case string:
 			s.driverConnection.WriteByte(COMMAND_SETSTRING)
 			s.driverConnection.WriteString(s.id)
 			s.driverConnection.WriteInt32(int32(i + 1))
-			s.driverConnection.WriteString(x)
+			s.driverConnection.WriteString(xT)
 		case float64:
 			s.driverConnection.WriteByte(COMMAND_SETDOUBLE)
 			s.driverConnection.WriteString(s.id)
 			s.driverConnection.WriteInt32(int32(i + 1))
-			s.driverConnection.WriteFloat64(x)
+			s.driverConnection.WriteFloat64(xT)
 		case time.Time:
 			s.driverConnection.WriteByte(COMMAND_SETTIME)
 			s.driverConnection.WriteString(s.id)
 			s.driverConnection.WriteInt32(int32(i + 1))
-			s.driverConnection.WriteInt64(x.UnixNano() / 1000000)
+			s.driverConnection.WriteInt64(xT.UnixNano() / 1000000)
+		case nil:
+			s.driverConnection.WriteByte(COMMAND_SETNULL)
+			s.driverConnection.WriteString(s.id)
+			s.driverConnection.WriteInt32(int32(i + 1))
 		default:
-			fmt.Printf("unhandled: %T %v\n", x, x)
+			fmt.Printf("unhandled(%d): %T %v %T %v\n", i, x, x, xT, xT)
 		}
 	}
 }

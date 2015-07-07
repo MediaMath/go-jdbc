@@ -41,6 +41,7 @@ enum Commands {
     case 12: // commit transaction
     case 13: // rollback transaction
     case 14: // set time
+    case 15: // set null
 }
 
 enum GetTypes {
@@ -174,6 +175,11 @@ def processResult = {sock->
                         long b = dataIn.readLong();
                         stmts.get(id).setTimestamp(a,new java.sql.Timestamp(b));
                         break;
+                    case 15:
+                        String id = readString();
+                        int a = dataIn.readInt();
+                        stmts.get(id).setObject(a,null);
+                        break;    
                         
                     case 5: // execute
                         String id = readString();
