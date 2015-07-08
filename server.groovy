@@ -63,6 +63,7 @@ def processResult = {sock->
     sock.withStreams {inputStream,outputStream->
         java.sql.Connection connection;
         def stmts = [:]
+        def stmtsToExecOnCommit = [:]
         def results = [:]
         def resultMeta = [:]
         try {
@@ -115,12 +116,29 @@ def processResult = {sock->
                         break;
 
                     case 12: // commit transaction
-                        connection.commit();
+                        try {
+                            stmtsToExecOnCommit.each {i,s->
+                                s.executeBatch();
+                            }
+                            connection.commit();
+                            dataOut.writeByte(0);
+                        } catch (e) {
+                            dataOut.writeByte(1);
+                            writeString(e.getMessage());
+                        }
+                        stmtsToExecOnCommit.clear();
                         connection.setAutoCommit(true);
                         break;
 
                     case 13: // rollback transaction
-                        connection.rollback();
+                        try {
+                            connection.rollback();
+                            dataOut.writeByte(0);
+                        } catch (e) {
+                            dataOut.writeByte(1);
+                            writeString(e.getMessage());
+                        }
+                        stmtsToExecOnCommit.clear();
                         connection.setAutoCommit(true);
                         break;
 
@@ -144,8 +162,14 @@ def processResult = {sock->
                     case 2: // prepare
                         String id = readString();
                         String q = readString();
-                        java.sql.PreparedStatement s = connection.prepareStatement(q);
-                        stmts.put(id,s);
+                        // TODO: Add a success/fail to send back to driver.go
+                        try {
+                            java.sql.PreparedStatement s = connection.prepareStatement(q);
+                            stmts.put(id,s);
+                        } catch(java.sql.SQLSyntaxErrorException e) {
+                            e.printStackTrace()
+                            println q // DEBUG
+                        }
                         break;
 
                     case 3: // setLong
@@ -184,6 +208,17 @@ def processResult = {sock->
                     case 5: // execute
                         String id = readString();
                         java.sql.PreparedStatement s = stmts.get(id);
+                        if(!connection.getAutoCommit()) {
+                            try {
+                                s.addBatch();
+                                stmtsToExecOnCommit.put(id,s);
+                                dataOut.writeByte(0);
+                            } catch (e) {
+                                dataOut.writeByte(2);
+                                writeString(e.getMessage());
+                            }
+                            break;
+                        }
                         try {
                             boolean r = s.execute();
                             if (r) {

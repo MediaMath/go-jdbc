@@ -3,6 +3,7 @@ package gojdbc
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"sync"
 	"testing"
 	"time"
@@ -36,8 +37,8 @@ func TestJDBC(t *testing.T) {
 	testTime := time.Now().Round(time.Second)
 	tx, err := db.Begin()
 	fatalErr(err)
-	stmt, err := db.Prepare("insert into test(Title,Age,Created) values(?,?,?)")
-	stmt = tx.Stmt(stmt)
+	stmt, err := tx.Prepare("insert into test(Title,Age,Created) values(?,?,?)")
+	//stmt = tx.Stmt(stmt)
 	fatalErr(err)
 	var wg sync.WaitGroup
 	wg.Add(100)
@@ -46,11 +47,8 @@ func TestJDBC(t *testing.T) {
 			defer wg.Done()
 			r, err := stmt.Exec(fmt.Sprintf("The %d", i), i, testTime)
 			fatalErr(err)
-			if a, err := r.RowsAffected(); a != 1 {
-				t.Fatal("Expected 1, got %d", a)
-			} else {
-				fatalErr(err)
-			}
+			_, err = r.RowsAffected()
+			fatalErr(err)
 		}(i)
 	}
 	wg.Wait()
@@ -61,7 +59,9 @@ func TestJDBC(t *testing.T) {
 	fatalErr(err)
 	defer rows.Close()
 
+	i := 0
 	for rows.Next() {
+		i = i + 1
 		r := Test{}
 		if e := rows.Scan(&r.Id, &r.Title, &r.Age, &r.Created); e != nil {
 			t.Fatal(e)
@@ -76,6 +76,9 @@ func TestJDBC(t *testing.T) {
 			t.Fatalf("Expected time %v but got %v", testTime, r.Created)
 
 		}
+	}
+	if i < 100 {
+		t.Fatalf("Expected 100 but got %d.", i)
 	}
 
 }

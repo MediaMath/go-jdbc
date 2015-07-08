@@ -3,6 +3,7 @@ package gojdbc
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"time"
@@ -10,6 +11,7 @@ import (
 
 type driverConnection struct {
 	conn net.Conn
+	tx   *tx
 }
 
 func (j *driverConnection) Close() error {
@@ -130,6 +132,27 @@ func (j *driverConnection) WriteBool(i bool) error {
 	}
 	if err := binary.Write(j.conn, binary.BigEndian, x); err != nil {
 		return err
+	}
+	return nil
+}
+
+// Common error approach
+func (j *driverConnection) CheckError() error {
+	returnCode, e := j.ReadByte()
+	if e != nil {
+		return e
+	}
+	switch returnCode {
+	case 0:
+		return nil
+	case 1:
+		errMessage, e := j.ReadString()
+		if e == nil {
+			e = fmt.Errorf(errMessage)
+		}
+		return e
+	default:
+		return fmt.Errorf("Unknown code: %d", int(returnCode))
 	}
 	return nil
 }
