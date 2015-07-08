@@ -162,13 +162,14 @@ def processResult = {sock->
                     case 2: // prepare
                         String id = readString();
                         String q = readString();
-                        // TODO: Add a success/fail to send back to driver.go
+                        
                         try {
                             java.sql.PreparedStatement s = connection.prepareStatement(q);
                             stmts.put(id,s);
+                            dataOut.writeByte(0);
                         } catch(java.sql.SQLSyntaxErrorException e) {
-                            e.printStackTrace()
-                            println q // DEBUG
+                            dataOut.writeByte(1);
+                            writeString(e.getMessage());
                         }
                         break;
 

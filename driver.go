@@ -123,6 +123,10 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
+	if e := c.dc.CheckError(); e != nil {
+		return nil, e
+	}
+
 	s := &stmt{conn: c, id: id.String(), query: query}
 	c.openStmtLock.Lock()
 	defer c.openStmtLock.Unlock()
