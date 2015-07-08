@@ -63,7 +63,6 @@ def processResult = {sock->
     sock.withStreams {inputStream,outputStream->
         java.sql.Connection connection;
         def stmts = [:]
-        def stmtsToExecOnCommit = [:]
         def results = [:]
         def resultMeta = [:]
         try {
@@ -117,16 +116,16 @@ def processResult = {sock->
 
                     case 12: // commit transaction
                         try {
-                            stmtsToExecOnCommit.each {i,s->
-                                s.executeBatch();
+                            stmts.each {i,s->
+                                if(!s.hasBatch) {return}
+                                s.s.executeBatch();
                             }
                             connection.commit();
                             dataOut.writeByte(0);
                         } catch (e) {
                             dataOut.writeByte(1);
-                            writeString(e.getMessage());
+                            writeString(e.getMessage()?:e.toString() );
                         }
-                        stmtsToExecOnCommit.clear();
                         connection.setAutoCommit(true);
                         break;
 
@@ -138,15 +137,25 @@ def processResult = {sock->
                             dataOut.writeByte(1);
                             writeString(e.getMessage());
                         }
-                        stmtsToExecOnCommit.clear();
                         connection.setAutoCommit(true);
                         break;
 
                     case 9: // close statement 
                         String id = readString();
-                        java.sql.PreparedStatement s = stmts.get(id);
-                        s.close();
-                        stmts.remove(id);
+                        def myStatment = stmts.get(id);
+                        java.sql.PreparedStatement s = myStatment.s;
+                        try {
+                            if(myStatment.hasBatch) {
+                                s.executeBatch();
+                            }
+                            s.close();
+                            dataOut.writeByte(0);
+                        } catch (e) {
+                            dataOut.writeByte(1);
+                            writeString(e.getMessage());
+                        } finally {
+                            stmts.remove(id);
+                        }
                         break;
 
                     case 10: // close result set 
@@ -165,11 +174,13 @@ def processResult = {sock->
                         
                         try {
                             java.sql.PreparedStatement s = connection.prepareStatement(q);
-                            stmts.put(id,s);
+                            def myStatment = ["s":s];
+                            myStatment.insertUpdate = (q.toLowerCase() =~ /^(insert|update).*/).matches();
+                            stmts.put(id,myStatment);
                             dataOut.writeByte(0);
                         } catch(java.sql.SQLSyntaxErrorException e) {
                             dataOut.writeByte(1);
-                            writeString(e.getMessage());
+                            writeString(e.getMessage()?:e.toString());
                         }
                         break;
 
@@ -177,42 +188,44 @@ def processResult = {sock->
                         String id = readString();
                         int a = dataIn.readInt();
                         long b = dataIn.readLong();
-                        stmts.get(id).setLong(a,b);
+                        stmts.get(id).s.setLong(a,b);
                         break;
 
                     case 4: // setString
                         String id = readString();
                         int a = dataIn.readInt();
                         String b = readString();
-                        stmts.get(id).setString(a,b);
+                        stmts.get(id).s.setString(a,b);
                         break;
 
                     case 8: // setDouble
                         String id = readString();
                         int a = dataIn.readInt();
                         double b = dataIn.readDouble();
-                        stmts.get(id).setDouble(a,b);
+                        stmts.get(id).s.setDouble(a,b);
                         break;
 
                     case 14: // set time
                         String id = readString();
                         int a = dataIn.readInt();
                         long b = dataIn.readLong();
-                        stmts.get(id).setTimestamp(a,new java.sql.Timestamp(b));
+                        stmts.get(id).s.setTimestamp(a,new java.sql.Timestamp(b));
                         break;
                     case 15:
                         String id = readString();
                         int a = dataIn.readInt();
-                        stmts.get(id).setObject(a,null);
+                        stmts.get(id).s.setObject(a,null);
                         break;    
                         
                     case 5: // execute
                         String id = readString();
-                        java.sql.PreparedStatement s = stmts.get(id);
-                        if(!connection.getAutoCommit()) {
+                        def myStatement = stmts.get(id);
+                        java.sql.PreparedStatement s = myStatement.s;
+                        if(!connection.getAutoCommit() && myStatement.insertUpdate) {
                             try {
                                 s.addBatch();
-                                stmtsToExecOnCommit.put(id,s);
+                                myStatement["hasBatch"] = true
+                                stmts.put(id,myStatement);
                                 dataOut.writeByte(0);
                             } catch (e) {
                                 dataOut.writeByte(2);
@@ -400,13 +413,13 @@ def processResult = {sock->
             }
             if(stmts) {
                 try {
-                    stmts.each {k,v->v.close()}
+                    stmts.each {k,v->v.s.close()}
                 } catch(e) {
                 }
             }
             if(results) {
                 try {
-                    results.each {k,v->v.close()}
+                    results.each {k,v->v.s.close()}
                 } catch(e) {
                 }
             }

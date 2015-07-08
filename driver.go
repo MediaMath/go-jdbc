@@ -214,6 +214,9 @@ func (s *stmt) Close() (e error) {
 		if e = s.conn.dc.WriteByte(COMMAND_CLOSE_STATEMENT); e == nil {
 			e = s.conn.dc.WriteString(s.id)
 		}
+		if e == nil {
+			e = s.conn.dc.CheckError()
+		}
 	}
 	return
 }
