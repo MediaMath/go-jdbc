@@ -158,7 +158,7 @@ func (c *conn) putStmt(s *stmt) {
 
 func (c *conn) Begin() (driver.Tx, error) {
 	c.tx = &tx{c: c}
-	return c.tx, c.dc.WriteByte(11)
+	return c.tx, c.dc.WriteByte(COMMAND_BEGIN_TRANSACTION)
 
 }
 
@@ -180,7 +180,7 @@ func (t *tx) Commit() error {
 	if !t.finish() {
 		return nil
 	}
-	if e := t.c.dc.WriteByte(12); e != nil {
+	if e := t.c.dc.WriteByte(COMMAND_COMMIT_TRANSACTION); e != nil {
 		return e
 	}
 	return t.c.dc.CheckError()
@@ -190,7 +190,7 @@ func (t *tx) Rollback() error {
 	if !t.finish() {
 		return nil
 	}
-	if e := t.c.dc.WriteByte(13); e != nil {
+	if e := t.c.dc.WriteByte(COMMAND_ROLLBACK_TRANSACTION); e != nil {
 		return e
 	}
 	return t.c.dc.CheckError()

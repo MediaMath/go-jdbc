@@ -2,10 +2,10 @@ import groovy.sql.Sql
 import groovy.json.JsonSlurper
 import groovy.json.JsonBuilder
 
-def cli = new CliBuilder( usage: 'driver_server.groovy')
+def cli = new CliBuilder( usage: 'server.groovy')
 cli.with {
-    p longOpt:'port', required: true, args:1, argName:'port', 'Port to listen on '
-    c longOpt:'config',required: true, args:1, argName:'config','Json file configuration settings'
+    p longOpt:'port', required: true, args:1, argName:'port', 'Port to listen on'
+    c longOpt:'config',required: true, args:1, argName:'config','JSON file configuration settings'
 }
 
 def myOptions = cli.parse(args)
@@ -25,39 +25,22 @@ Class.forName(config.driver)
 
 def server = new ServerSocket(myOptions.p.toInteger())
 
-/*
-enum Commands {
-    case 1: // DONE
-    case 2: // prepare
-    case 3: // setLong
-    case 4: // setString
-    case 5: // execute
-    case 6: // next
-    case 7: // get
-    case 8: // setDouble
-    case 9: // close statement 
-    case 10: // close result set 
-    case 11: // begin transaction
-    case 12: // commit transaction
-    case 13: // rollback transaction
-    case 14: // set time
-    case 15: // set null
-}
-
-enum GetTypes {
-    case 1: // int
-    case 2: // string
-    case 3: // double
-    case 4: // float
-    case 5: // time
-    case 6: // long
-    case 7: // short
-    case 8: // byte
-    case 9: // boolean
-    case 10: // big decimal
-    case 11: // timestamp
-}
-*/
+// Commands
+int commandDone = 1
+int commandPrepare = 2
+int commandSetLong = 3
+int commandSetString = 4
+int commandExecute = 5
+int commandNext = 6
+int commandGet = 7
+int commandSetDouble = 8
+int commandCloseStatement  = 9
+int commandCloseResultSet  = 10
+int commandBeginTransaction = 11
+int commandCommitTransaction = 12
+int commandRollbackTransaction = 13
+int commandSetTime = 14
+int commandSetNull = 15
 
 def processResult = {sock->
     sock.withStreams {inputStream,outputStream->
@@ -91,13 +74,10 @@ def processResult = {sock->
             // Connect to database
             connection = java.sql.DriverManager.getConnection(config.url,config.user,config.password)
             connection.setAutoCommit(true)
-            connection.setTransactionIsolation(java.sql.Connection.TRANSACTION_SERIALIZABLE)
-
 
             writeString("d67c184ff3c42e7b7a0bf2d4bca50340");
             dataOut.flush();
 
-            
             byte selector;
             while (true) {
                 try {
@@ -110,11 +90,11 @@ def processResult = {sock->
                 }
                 try {
                     switch (selector) {
-                    case 11: // begin transaction
+                    case commandBeginTransaction:
                         connection.setAutoCommit(false);
                         break;
 
-                    case 12: // commit transaction
+                    case commandCommitTransaction:
                         try {
                             stmts.each {i,s->
                                 if(!s.hasBatch) {return}
@@ -129,7 +109,7 @@ def processResult = {sock->
                         connection.setAutoCommit(true);
                         break;
 
-                    case 13: // rollback transaction
+                    case commandRollbackTransaction:
                         try {
                             connection.rollback();
                             dataOut.writeByte(0);
@@ -140,7 +120,7 @@ def processResult = {sock->
                         connection.setAutoCommit(true);
                         break;
 
-                    case 9: // close statement 
+                    case commandCloseStatement:
                         String id = readString();
                         def myStatment = stmts.get(id);
                         java.sql.PreparedStatement s = myStatment.s;
@@ -158,7 +138,7 @@ def processResult = {sock->
                         }
                         break;
 
-                    case 10: // close result set 
+                    case commandCloseResultSet:
                         String id = readString();
                         java.sql.ResultSet rs = results.get(id);
                         if(rs) {
@@ -168,7 +148,7 @@ def processResult = {sock->
                         }
                         break;
 
-                    case 2: // prepare
+                    case commandPrepare:
                         String id = readString();
                         String q = readString();
                         
@@ -184,40 +164,40 @@ def processResult = {sock->
                         }
                         break;
 
-                    case 3: // setLong
+                    case commandSetLong:
                         String id = readString();
                         int a = dataIn.readInt();
                         long b = dataIn.readLong();
                         stmts.get(id).s.setLong(a,b);
                         break;
 
-                    case 4: // setString
+                    case commandSetString:
                         String id = readString();
                         int a = dataIn.readInt();
                         String b = readString();
                         stmts.get(id).s.setString(a,b);
                         break;
 
-                    case 8: // setDouble
+                    case commandSetDouble:
                         String id = readString();
                         int a = dataIn.readInt();
                         double b = dataIn.readDouble();
                         stmts.get(id).s.setDouble(a,b);
                         break;
 
-                    case 14: // set time
+                    case commandSetTime:
                         String id = readString();
                         int a = dataIn.readInt();
                         long b = dataIn.readLong();
                         stmts.get(id).s.setTimestamp(a,new java.sql.Timestamp(b));
                         break;
-                    case 15:
+                    case commandSetNull:
                         String id = readString();
                         int a = dataIn.readInt();
                         stmts.get(id).s.setObject(a,null);
                         break;    
                         
-                    case 5: // execute
+                    case commandExecute:
                         String id = readString();
                         def myStatement = stmts.get(id);
                         java.sql.PreparedStatement s = myStatement.s;
@@ -261,7 +241,7 @@ def processResult = {sock->
                         }
                         break;
                         
-                    case 6: // next
+                    case commandNext:
                         int batchSize = dataIn.readInt();
                         String id = readString();
                         java.sql.ResultSet rs = results.get(id);
@@ -277,7 +257,7 @@ def processResult = {sock->
                             int n = md.getColumnCount();
                             for (int i=1; i<=n; i++) {
                                 switch (md.getColumnClassName(i)) {
-                                case "java.lang.Integer":
+                                case java.lang.Integer.getName():
                                     int val = rs.getInt(i);
                                     if (rs.wasNull()) {
                                         dataOut.writeByte(0);
@@ -287,7 +267,7 @@ def processResult = {sock->
                                     dataOut.writeInt(val);
                                     break;
                                     
-                                case "java.lang.String":
+                                case java.lang.String.getName():
                                     String val = rs.getString(i);
                                     if (rs.wasNull()) {
                                         dataOut.writeByte(0);
@@ -297,7 +277,7 @@ def processResult = {sock->
                                     writeString(val);
                                     break;
                                     
-                                case "java.lang.Double":
+                                case java.lang.Double.getName():
                                     double val = rs.getDouble(i);
                                     if (rs.wasNull()) {
                                         dataOut.writeByte(0);
@@ -307,7 +287,7 @@ def processResult = {sock->
                                     dataOut.writeDouble(val);
                                     break;
                                     
-                                case "java.lang.Float":
+                                case java.lang.Float.getName():
                                     float val = rs.getFloat(i);
                                     if (rs.wasNull()) {
                                         dataOut.writeByte(0);
@@ -317,7 +297,7 @@ def processResult = {sock->
                                     dataOut.writeFloat(val);
                                     break;
                                     
-                                case "java.sql.Date":
+                                case java.sql.Date.getName():
                                     java.sql.Date val = rs.getDate(i);
                                     if (rs.wasNull()) {
                                         dataOut.writeByte(0);
@@ -327,7 +307,7 @@ def processResult = {sock->
                                     dataOut.writeLong(i.getTime());
                                     break;
                                     
-                                case "java.sql.Timestamp":
+                                case java.sql.Timestamp.getName():
                                     java.sql.Timestamp val = rs.getTimestamp(i);
                                     if (rs.wasNull()) {
                                         dataOut.writeByte(0);
@@ -337,7 +317,7 @@ def processResult = {sock->
                                     dataOut.writeLong(val.getTime());
                                     break;
                                     
-                                case "java.lang.Long":
+                                case java.lang.Long.getName():
                                     long val = rs.getLong(i);
                                     if (rs.wasNull()) {
                                         dataOut.writeByte(0);
@@ -347,7 +327,7 @@ def processResult = {sock->
                                     dataOut.writeLong(val);
                                     break;
                                     
-                                case "java.lang.Short":
+                                case java.lang.Short.getName():
                                     short val = rs.getShort(i);
                                     if (rs.wasNull()) {
                                         dataOut.writeByte(0);
@@ -357,7 +337,7 @@ def processResult = {sock->
                                     dataOut.writeShort(val);
                                     break;
                                     
-                                case "java.lang.Byte":
+                                case java.lang.Byte.getName():
                                     byte val = rs.getByte(i);
                                     if (rs.wasNull()) {
                                         dataOut.writeByte(0);
@@ -367,7 +347,7 @@ def processResult = {sock->
                                     dataOut.writeByte(val);
                                     break;
                                     
-                                case "java.lang.Boolean":
+                                case java.lang.Boolean.getName():
                                     boolean val = rs.getBoolean(i);
                                     if (rs.wasNull()) {
                                         dataOut.writeByte(0);
@@ -377,7 +357,7 @@ def processResult = {sock->
                                     dataOut.writeByte(val ? 1 : 0);
                                     break;
                                     
-                                case "java.math.BigDecimal":
+                                case java.math.BigDecimal.getName():
                                     java.math.BigDecimal val = rs.getBigDecimal(i);
                                     if (rs.wasNull()) {
                                         dataOut.writeByte(0);
