@@ -134,12 +134,6 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 	return s, nil
 }
 
-func check(e error) {
-	if e != nil {
-		panic(e)
-	}
-}
-
 func (c *conn) Close() (e error) {
 	c.openStmtLock.Lock()
 	defer c.openStmtLock.Unlock()
@@ -158,7 +152,7 @@ func (c *conn) putStmt(s *stmt) {
 
 func (c *conn) Begin() (driver.Tx, error) {
 	c.tx = &tx{c: c}
-	return c.tx, c.dc.WriteByte(COMMAND_BEGIN_TRANSACTION)
+	return c.tx, c.dc.WriteByte(11)
 
 }
 
@@ -180,7 +174,7 @@ func (t *tx) Commit() error {
 	if !t.finish() {
 		return nil
 	}
-	if e := t.c.dc.WriteByte(COMMAND_COMMIT_TRANSACTION); e != nil {
+	if e := t.c.dc.WriteByte(12); e != nil {
 		return e
 	}
 	return t.c.dc.CheckError()
@@ -190,7 +184,7 @@ func (t *tx) Rollback() error {
 	if !t.finish() {
 		return nil
 	}
-	if e := t.c.dc.WriteByte(COMMAND_ROLLBACK_TRANSACTION); e != nil {
+	if e := t.c.dc.WriteByte(13); e != nil {
 		return e
 	}
 	return t.c.dc.CheckError()
@@ -230,14 +224,18 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 	s.conn.dc.WriteByte(COMMAND_EXECUTE)
 	s.conn.dc.WriteString(s.id)
 	b, err := s.conn.dc.ReadByte()
-	check(err)
+	if err != nil {
+		return nil, err
+	}
 	switch b {
 	case 0:
 		var c int32
 
 		if s.conn.tx == nil {
 			c, err = s.conn.dc.ReadInt32()
-			check(err)
+			if err != nil {
+				return nil, err
+			}
 			if c < 0 {
 				c = 0
 			}
@@ -295,12 +293,16 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 	s.conn.dc.WriteByte(COMMAND_EXECUTE)
 	s.conn.dc.WriteString(s.id)
 	b, err := s.conn.dc.ReadByte()
-	check(err)
+	if err != nil {
+		return nil, err
+	}
 	switch b {
 	// No row
 	case 0:
 		_, err := s.conn.dc.ReadInt32()
-		check(err)
+		if err != nil {
+			return nil, err
+		}
 		return &norows{}, nil
 
 	// Results
@@ -309,12 +311,18 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 		id2, _ := NewV4()
 		s.conn.dc.WriteString(id2.String())
 		n, err := s.conn.dc.ReadInt32()
-		check(err)
+		if err != nil {
+			return nil, err
+		}
 		for i := 0; i < int(n); i++ {
 			name, err := s.conn.dc.ReadString()
-			check(err)
+			if err != nil {
+				return nil, err
+			}
 			class, err := s.conn.dc.ReadString()
-			check(err)
+			if err != nil {
+				return nil, err
+			}
 			names = append(names, name)
 			classes = append(classes, class)
 		}
