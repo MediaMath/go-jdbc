@@ -6,6 +6,7 @@ def cli = new CliBuilder( usage: 'server.groovy')
 cli.with {
     p longOpt:'port', required: true, args:1, argName:'port', 'Port to listen on'
     c longOpt:'config',required: true, args:1, argName:'config','JSON file configuration settings'
+    t longOpt:'transaction-level',args:1, argName:'transaction-level', 'The JDBC transaction level to use for all connections.'
 }
 
 def myOptions = cli.parse(args)
@@ -74,6 +75,24 @@ def processResult = {sock->
             // Connect to database
             connection = java.sql.DriverManager.getConnection(config.url,config.user,config.password)
             connection.setAutoCommit(true)
+            switch(myOptions.t) {
+                case "NONE":
+                    connection.setTransactionIsolation(java.sql.Connection.TRANSACTION_NONE)
+                    break
+                case "READ_COMMITTED":
+                    connection.setTransactionIsolation(java.sql.Connection.TRANSACTION_READ_COMMITTED)
+                    break
+                case "READ_UNCOMMITTED":
+                    connection.setTransactionIsolation(java.sql.Connection.TRANSACTION_READ_UNCOMMITTED)
+                    break
+                case "REPEATABLE_READ":
+                    connection.setTransactionIsolation(java.sql.Connection.TRANSACTION_REPEATABLE_READ)
+                    break
+                case "SERIALIZABLE":
+                    println java.sql.Connection.TRANSACTION_SERIALIZABLE
+                    connection.setTransactionIsolation(java.sql.Connection.TRANSACTION_SERIALIZABLE)
+                    break
+            }
 
             writeString("d67c184ff3c42e7b7a0bf2d4bca50340");
             dataOut.flush();
@@ -88,6 +107,7 @@ def processResult = {sock->
                 } catch(java.io.EOFException e) {
                     break;
                 }
+
                 try {
                     switch (selector) {
                     case commandBeginTransaction:
@@ -201,6 +221,7 @@ def processResult = {sock->
                         String id = readString();
                         def myStatement = stmts.get(id);
                         java.sql.PreparedStatement s = myStatement.s;
+
                         if(!connection.getAutoCommit() && myStatement.insertUpdate) {
                             try {
                                 s.addBatch();
