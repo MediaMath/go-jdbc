@@ -89,7 +89,6 @@ def processResult = {sock->
                     connection.setTransactionIsolation(java.sql.Connection.TRANSACTION_REPEATABLE_READ)
                     break
                 case "SERIALIZABLE":
-                    println java.sql.Connection.TRANSACTION_SERIALIZABLE
                     connection.setTransactionIsolation(java.sql.Connection.TRANSACTION_SERIALIZABLE)
                     break
             }
