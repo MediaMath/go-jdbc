@@ -42,6 +42,7 @@ int commandCommitTransaction = 12
 int commandRollbackTransaction = 13
 int commandSetTime = 14
 int commandSetNull = 15
+int commandSetQueryTimeout = 16
 
 def processResult = {sock->
     sock.withStreams {inputStream,outputStream->
@@ -180,6 +181,20 @@ def processResult = {sock->
                         } catch(java.sql.SQLSyntaxErrorException e) {
                             dataOut.writeByte(1);
                             writeString(e.getMessage()?:e.toString());
+                        }
+                        break;
+
+                    case commandSetQueryTimeout:
+                        String id = readString();
+                        int a = dataIn.readLong();
+                        def myStatment = stmts.get(id);
+                        try {
+                            java.sql.PreparedStatement s = myStatment.s;
+                            s.setQueryTimeout(a);
+                            dataOut.writeByte(0);
+                        } catch (java.sql.SQLException e) {
+                            dataOut.writeByte(1);
+                            writeString(e.getMessage());
                         }
                         break;
 

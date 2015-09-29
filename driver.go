@@ -15,24 +15,25 @@ import (
 )
 
 const (
-	_            = iota
-	COMMAND_DONE = iota
-	COMMAND_PREPARE
-	COMMAND_SETLONG
-	COMMAND_SETSTRING
-	COMMAND_EXECUTE
-	COMMAND_NEXT
-	COMMAND_GET
-	COMMAND_SETDOUBLE
-	COMMAND_CLOSE_STATEMENT
-	COMMAND_CLOSE_RESULT_SET
-	COMMAND_BEGIN_TRANSACTION
-	COMMAND_COMMIT_TRANSACTION
-	COMMAND_ROLLBACK_TRANSACTION
-	COMMAND_SETTIME
-	COMMAND_SETNULL
+	_           = iota
+	commandDone = iota
+	commandPrepare
+	commandSetlong
+	commandSetstring
+	commandExecute
+	commandNext
+	commandGet
+	commandSetdouble
+	commandCloseStatement
+	commandCloseResultSet
+	commandBeginTransaction
+	commandCommitTransaction
+	commandRollbackTransaction
+	commandSettime
+	commandSetnull
+	commandSetquerytimeout
 
-	COMMAND_CLOSE_CONNECTION = -1
+	commandCloseConnection = -1
 )
 
 //const (
@@ -58,9 +59,10 @@ type Driver struct {
 }
 
 const (
-	PARAM_TIMEOUT          = "timeout"
-	CONNECTION_TEST_STRING = "d67c184ff3c42e7b7a0bf2d4bca50340"
-	BUFFER_SIZE            = 1000
+	paramTimeout         = "timeout"
+	paramQueryTimeout    = "queryTimeout"
+	connectionTestString = "d67c184ff3c42e7b7a0bf2d4bca50340"
+	bufferSize           = 1000
 )
 
 func (j Driver) Open(name string) (driver.Conn, error) {
@@ -71,7 +73,7 @@ func (j Driver) Open(name string) (driver.Conn, error) {
 
 	var newConnection net.Conn
 
-	if timeoutRaw, ok := u.Query()[PARAM_TIMEOUT]; ok && len(timeoutRaw) > 0 {
+	if timeoutRaw, ok := u.Query()[paramTimeout]; ok && len(timeoutRaw) > 0 {
 		timeout, e := strconv.ParseInt(timeoutRaw[0], 10, 64)
 		if e == nil {
 			newConnection, e = net.DialTimeout(u.Scheme, u.Host, time.Duration(timeout))
@@ -82,6 +84,15 @@ func (j Driver) Open(name string) (driver.Conn, error) {
 				e = tcp.SetLinger(-1)
 			}
 		}
+	}
+
+	var queryTimeout int64
+	if timeoutRaw, ok := u.Query()[paramQueryTimeout]; ok && len(timeoutRaw) > 0 {
+		qt, e := strconv.ParseInt(timeoutRaw[0], 10, 64)
+		if e != nil {
+			return nil, e
+		}
+		queryTimeout = qt
 	}
 
 	if e != nil {
@@ -95,11 +106,11 @@ func (j Driver) Open(name string) (driver.Conn, error) {
 	if s, e := dc.ReadString(); e != nil {
 		newConnection.Close()
 		return nil, e
-	} else if s != CONNECTION_TEST_STRING {
+	} else if s != connectionTestString {
 		newConnection.Close()
 	}
 
-	return &conn{openStmt: map[string]*stmt{}, dc: dc}, nil
+	return &conn{openStmt: map[string]*stmt{}, dc: dc, queryTimeout: queryTimeout}, nil
 }
 
 type conn struct {
@@ -107,10 +118,11 @@ type conn struct {
 	openStmtLock sync.Mutex
 	dc           *driverConnection
 	tx           *tx
+	queryTimeout int64
 }
 
 func (c *conn) Prepare(query string) (driver.Stmt, error) {
-	err := c.dc.WriteByte(COMMAND_PREPARE)
+	err := c.dc.WriteByte(commandPrepare)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +137,15 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 	}
 	if e := c.dc.CheckError(); e != nil {
 		return nil, e
+	}
+
+	if c.queryTimeout > 0 {
+		c.dc.WriteByte(commandSetquerytimeout)
+		c.dc.WriteString(id.String())
+		c.dc.WriteInt64(c.queryTimeout)
+		if e := c.dc.CheckError(); e != nil {
+			return nil, e
+		}
 	}
 
 	s := &stmt{conn: c, id: id.String(), query: query}
@@ -205,7 +226,7 @@ func (s *stmt) Close() (e error) {
 	if !s.closed {
 		defer s.conn.putStmt(s)
 		s.closed = true
-		if e = s.conn.dc.WriteByte(COMMAND_CLOSE_STATEMENT); e == nil {
+		if e = s.conn.dc.WriteByte(commandCloseStatement); e == nil {
 			e = s.conn.dc.WriteString(s.id)
 		}
 		if e == nil {
@@ -221,7 +242,7 @@ func (s *stmt) NumInput() int {
 
 func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 	s.stage1(args)
-	s.conn.dc.WriteByte(COMMAND_EXECUTE)
+	s.conn.dc.WriteByte(commandExecute)
 	s.conn.dc.WriteString(s.id)
 	b, err := s.conn.dc.ReadByte()
 	if err != nil {
@@ -259,27 +280,27 @@ func (s *stmt) stage1(args []driver.Value) {
 	for i, x := range args {
 		switch xT := x.(type) {
 		case int64:
-			s.conn.dc.WriteByte(COMMAND_SETLONG)
+			s.conn.dc.WriteByte(commandSetlong)
 			s.conn.dc.WriteString(s.id)
 			s.conn.dc.WriteInt32(int32(i + 1))
 			s.conn.dc.WriteInt64(xT)
 		case string:
-			s.conn.dc.WriteByte(COMMAND_SETSTRING)
+			s.conn.dc.WriteByte(commandSetstring)
 			s.conn.dc.WriteString(s.id)
 			s.conn.dc.WriteInt32(int32(i + 1))
 			s.conn.dc.WriteString(xT)
 		case float64:
-			s.conn.dc.WriteByte(COMMAND_SETDOUBLE)
+			s.conn.dc.WriteByte(commandSetdouble)
 			s.conn.dc.WriteString(s.id)
 			s.conn.dc.WriteInt32(int32(i + 1))
 			s.conn.dc.WriteFloat64(xT)
 		case time.Time:
-			s.conn.dc.WriteByte(COMMAND_SETTIME)
+			s.conn.dc.WriteByte(commandSettime)
 			s.conn.dc.WriteString(s.id)
 			s.conn.dc.WriteInt32(int32(i + 1))
 			s.conn.dc.WriteInt64(xT.UnixNano() / 1000000)
 		case nil:
-			s.conn.dc.WriteByte(COMMAND_SETNULL)
+			s.conn.dc.WriteByte(commandSetnull)
 			s.conn.dc.WriteString(s.id)
 			s.conn.dc.WriteInt32(int32(i + 1))
 		default:
@@ -290,8 +311,9 @@ func (s *stmt) stage1(args []driver.Value) {
 
 func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 	s.stage1(args)
-	s.conn.dc.WriteByte(COMMAND_EXECUTE)
+	s.conn.dc.WriteByte(commandExecute)
 	s.conn.dc.WriteString(s.id)
+
 	b, err := s.conn.dc.ReadByte()
 	if err != nil {
 		return nil, err
@@ -364,7 +386,7 @@ func (r *rows) Columns() []string {
 func (r *rows) Close() (e error) {
 	if !r.closed {
 		r.closed = true
-		if e = r.WriteByte(COMMAND_CLOSE_RESULT_SET); e == nil {
+		if e = r.WriteByte(commandCloseResultSet); e == nil {
 			e = r.WriteString(r.id)
 		}
 	}
@@ -393,15 +415,15 @@ func (r *rows) Next(dest []driver.Value) error {
 }
 
 func (r *rows) bufferNext() error {
-	r.buffer = make([][]driver.Value, 0, BUFFER_SIZE)
+	r.buffer = make([][]driver.Value, 0, bufferSize)
 	r.currentRow = 0
 	nameLength := len(r.names)
 
-	r.WriteByte(COMMAND_NEXT)
-	r.WriteInt32(int32(BUFFER_SIZE))
+	r.WriteByte(commandNext)
+	r.WriteInt32(int32(bufferSize))
 	r.WriteString(r.id)
 
-	for i := 0; i < BUFFER_SIZE; i++ {
+	for i := 0; i < bufferSize; i++ {
 		if b, err := r.ReadByte(); err != nil {
 			return err
 		} else if b == 0 {
@@ -491,7 +513,7 @@ func (r *rows) bufferNext() error {
 				if err != nil {
 					return err
 				}
-				dest[i] = []byte(v)
+				dest[i] = v
 
 			case "java.lang.Double":
 				v, err := r.ReadFloat64()
