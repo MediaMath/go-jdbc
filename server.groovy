@@ -148,6 +148,10 @@ def processResult = {sock->
                             if(myStatment.hasBatch) {
                                 s.executeBatch();
                             }
+                        } catch (e) {
+                        }
+
+                        try {
                             s.close();
                             dataOut.writeByte(0);
                         } catch (e) {
@@ -248,6 +252,7 @@ def processResult = {sock->
                             }
                             break;
                         }
+
                         try {
                             boolean r = s.execute();
                             if (r) {
@@ -423,23 +428,31 @@ def processResult = {sock->
             } catch(e) {
                 println "Error closing ${e}"
             }
-            if(connection) {
-                connection.close()
-            }
-            if(stmts) {
-                try {
-                    stmts.each {k,v->v.s.close()}
-                } catch(e) {
-                }
-            }
-            if(results) {
-                try {
-                    results.each {k,v->v.s.close()}
-                } catch(e) {
-                }
-            }
-            
 
+            if(connection) {
+                if(results) {
+                    println "Clearing out resources: ${results.size()} results."
+                    results.each {k,v->
+                        try {
+                            v.s.close()
+                        } catch(e) {
+                            println "Error closing ${e}"
+                        }
+                    }
+                }
+
+                if(stmts) {
+                    println "Clearing out resources: ${stmts.size()} statements."
+                    stmts.each {k,v->
+                        try {
+                            v.s.close()
+                        } catch(e) {
+                            println "Error closing ${e}"
+                        }
+                    }
+                }
+                connection.close();
+            }
         }
     }
     try {

@@ -35,6 +35,7 @@ func TestJDBC(t *testing.T) {
 	testTime := time.Now().Round(time.Second)
 	fatalErr(err)
 	stmt, err := db.Prepare("insert into test(Title,Age,Created) values(?,?,?)")
+	defer stmt.Close()
 
 	fatalErr(err)
 	var wg sync.WaitGroup
@@ -100,6 +101,7 @@ func TestJDBCWithTransactions(t *testing.T) {
 	tx, err := db.Begin()
 	fatalErr(err)
 	stmt, err := tx.Prepare("insert into test(Title,Age,Created) values(?,?,?)")
+	defer stmt.Close()
 
 	fatalErr(err)
 	var wg sync.WaitGroup

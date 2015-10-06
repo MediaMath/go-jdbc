@@ -11,7 +11,6 @@ import (
 
 type driverConnection struct {
 	conn net.Conn
-	tx   *tx
 }
 
 func (j *driverConnection) Close() error {
