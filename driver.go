@@ -34,6 +34,7 @@ const (
 	commandSetquerytimeout
 
 	commandCloseConnection = -1
+	commandServerStatus    = 254
 )
 
 //const (
@@ -64,6 +65,45 @@ const (
 	connectionTestString = "d67c184ff3c42e7b7a0bf2d4bca50340"
 	bufferSize           = 1000
 )
+
+func ServerStatus(name string) (string, error) {
+	u, e := url.Parse(name)
+	if e != nil {
+		return "", e
+	}
+	var newConnection net.Conn
+
+	if timeoutRaw, ok := u.Query()[paramTimeout]; ok && len(timeoutRaw) > 0 {
+		timeout, e := strconv.ParseInt(timeoutRaw[0], 10, 64)
+		if e == nil {
+			newConnection, e = net.DialTimeout(u.Scheme, u.Host, time.Duration(timeout))
+		}
+	} else {
+		if newConnection, e = net.Dial(u.Scheme, u.Host); e == nil {
+			if tcp, ok := newConnection.(*net.TCPConn); ok {
+				e = tcp.SetLinger(-1)
+			}
+		}
+	}
+	if e != nil {
+		return "", e
+	}
+
+	defer newConnection.Close()
+
+	dc := &driverConnection{conn: newConnection}
+	if s, e := dc.ReadString(); e != nil {
+		return "", e
+	} else if s != connectionTestString {
+		return "", fmt.Errorf("Connection test failed, %s != %s", s, connectionTestString)
+	}
+
+	if e := dc.WriteByte(commandServerStatus); e != nil {
+		return "", e
+	}
+
+	return dc.ReadString()
+}
 
 func (j Driver) Open(name string) (driver.Conn, error) {
 	u, e := url.Parse(name)
@@ -108,6 +148,7 @@ func (j Driver) Open(name string) (driver.Conn, error) {
 		return nil, e
 	} else if s != connectionTestString {
 		newConnection.Close()
+		return nil, fmt.Errorf("Connection test failed, %s != %s", s, connectionTestString)
 	}
 
 	return &conn{openStmt: map[string]*stmt{}, dc: dc, queryTimeout: queryTimeout}, nil

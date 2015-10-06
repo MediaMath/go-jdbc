@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const testConnString = "tcp://localhost:7777/"
+
 type Test struct {
 	Id      int64
 	Title   string
@@ -21,7 +23,7 @@ func TestJDBC(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	db, err := sql.Open("jdbc", "tcp://localhost:7777/")
+	db, err := sql.Open("jdbc", testConnString)
 	fatalErr(err)
 	defer db.Close()
 
@@ -86,7 +88,7 @@ func TestJDBCWithTransactions(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	db, err := sql.Open("jdbc", "tcp://localhost:7777/")
+	db, err := sql.Open("jdbc", testConnString)
 	fatalErr(err)
 	defer db.Close()
 
@@ -153,7 +155,7 @@ func TestJDBCWithQueryTimeout(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	db, err := sql.Open("jdbc", "tcp://localhost:7777/?queryTimeout=1")
+	db, err := sql.Open("jdbc", fmt.Sprintf("%s%s", testConnString, "?queryTimeout=1"))
 	fatalErr(err)
 	defer db.Close()
 
@@ -168,6 +170,7 @@ func TestJDBCWithQueryTimeout(t *testing.T) {
 	tx, err := db.Begin()
 	fatalErr(err)
 	stmt, err := tx.Prepare("insert into test(Title,Age,Created) values(?,?,?)")
+	defer stmt.Close()
 
 	fatalErr(err)
 	var wg sync.WaitGroup
@@ -217,5 +220,54 @@ func TestJDBCWithQueryTimeout(t *testing.T) {
 	if i < groupSize {
 		t.Fatalf("Expected %d but got %d.", groupSize, i)
 	}
+
+}
+
+func TestSystemStatus(t *testing.T) {
+	fatalErr := func(e error) {
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+	db, err := sql.Open("jdbc", testConnString)
+	fatalErr(err)
+	defer db.Close()
+
+	if _, err = db.Exec("drop table if exists test;"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err = db.Exec("create table test(Id int auto_increment primary key, Title varchar(255), Age int, Created datetime)"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Parallel inserts
+	testTime := time.Now().Round(time.Second)
+
+	stmt, err := db.Prepare("insert into test(Title,Age,Created) values(?,?,?)")
+	fatalErr(err)
+	defer stmt.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		for i := 0; i < 10; i++ {
+			if r, err := stmt.Exec(fmt.Sprintf("The %d", i), i, testTime); err != nil {
+				t.Fatal(err)
+			} else {
+				if _, err = r.RowsAffected(); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		wg.Done()
+	}()
+
+	if status, e := serverStatus(testConnString); e != nil {
+		t.Fatal(e)
+	} else {
+		t.Log(status)
+	}
+	wg.Wait()
 
 }

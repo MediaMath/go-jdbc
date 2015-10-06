@@ -1,6 +1,7 @@
 import groovy.sql.Sql
 import groovy.json.JsonSlurper
 import groovy.json.JsonBuilder
+import java.util.concurrent.atomic.AtomicInteger
 
 def cli = new CliBuilder( usage: 'server.groovy')
 cli.with {
@@ -27,24 +28,30 @@ Class.forName(config.driver)
 def server = new ServerSocket(myOptions.p.toInteger())
 
 // Commands
-int commandDone = 1
-int commandPrepare = 2
-int commandSetLong = 3
-int commandSetString = 4
-int commandExecute = 5
-int commandNext = 6
-int commandGet = 7
-int commandSetDouble = 8
-int commandCloseStatement  = 9
-int commandCloseResultSet  = 10
-int commandBeginTransaction = 11
-int commandCommitTransaction = 12
-int commandRollbackTransaction = 13
-int commandSetTime = 14
-int commandSetNull = 15
-int commandSetQueryTimeout = 16
+byte commandDone = 1
+byte commandPrepare = 2
+byte commandSetLong = 3
+byte commandSetString = 4
+byte commandExecute = 5
+byte commandNext = 6
+byte commandGet = 7
+byte commandSetDouble = 8
+byte commandCloseStatement  = 9
+byte commandCloseResultSet  = 10
+byte commandBeginTransaction = 11
+byte commandCommitTransaction = 12
+byte commandRollbackTransaction = 13
+byte commandSetTime = 14
+byte commandSetNull = 15
+byte commandSetQueryTimeout = 16
+
+byte commandCloseConnection = -1
+byte commandServerStatus = -2
+
+def concurrentRequests = new AtomicInteger()
 
 def processResult = {sock->
+    concurrentRequests.getAndAdd(1);
     sock.withStreams {inputStream,outputStream->
         java.sql.Connection connection;
         def stmts = [:]
@@ -101,7 +108,14 @@ def processResult = {sock->
             while (true) {
                 try {
                     selector = dataIn.readByte()
-                    if(selector==-1) {
+                    if(selector<0) {
+                        switch(selector){
+                            case commandServerStatus:
+                                writeString("""Concurrent Requests (including this): ${concurrentRequests.intValue()}""");
+                                break;
+                            case commandCloseConnection:
+                                println "Close connection received.";
+                        }
                         break;
                     }
                 } catch(java.io.EOFException e) {
@@ -410,7 +424,7 @@ def processResult = {sock->
                             }
                         }
                         break;
-                        
+
                     default:
                         throw new Exception("java unknown byte: " + selector);
                     }
@@ -459,6 +473,8 @@ def processResult = {sock->
         sock.close()
     } catch (e){
         e.printStackTrace()
+    } finally {
+        concurrentRequests.getAndAdd(-1);
     }
 }
 
