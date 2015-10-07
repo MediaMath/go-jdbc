@@ -263,7 +263,7 @@ func TestSystemStatus(t *testing.T) {
 		wg.Done()
 	}()
 
-	if status, e := serverStatus(testConnString); e != nil {
+	if status, e := ServerStatus(testConnString); e != nil {
 		t.Fatal(e)
 	} else {
 		t.Log(status)

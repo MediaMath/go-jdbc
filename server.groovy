@@ -2,6 +2,7 @@ import groovy.sql.Sql
 import groovy.json.JsonSlurper
 import groovy.json.JsonBuilder
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.ConcurrentHashMap
 
 def cli = new CliBuilder( usage: 'server.groovy')
 cli.with {
@@ -49,6 +50,8 @@ byte commandCloseConnection = -1
 byte commandServerStatus = -2
 
 def concurrentRequests = new AtomicInteger()
+def connectionsInLastHour = new AtomicInteger()
+
 
 def processResult = {sock->
     concurrentRequests.getAndAdd(1);
@@ -111,7 +114,8 @@ def processResult = {sock->
                     if(selector<0) {
                         switch(selector){
                             case commandServerStatus:
-                                writeString("""Concurrent Requests (including this): ${concurrentRequests.intValue()}""");
+                                writeString("""Concurrent Requests (including this): ${concurrentRequests.intValue()}
+Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                                 break;
                             case commandCloseConnection:
                                 println "Close connection received.";
@@ -478,6 +482,16 @@ def processResult = {sock->
     }
 }
 
+def connectionTracker = []
 while (true) {
+
+    // Remove any 10 minutes old
+    connectionTracker.removeAll {it.time < (new Date().time-(1000*60*60))}
+
+    // Add another to the recent ones
+    connectionTracker.push(new Date())
+
+    connectionsInLastHour.set(connectionTracker.size())
+
     def socket = server.accept(true,processResult)
 }
