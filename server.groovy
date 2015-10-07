@@ -3,12 +3,14 @@ import groovy.json.JsonSlurper
 import groovy.json.JsonBuilder
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.ConcurrentHashMap
+import groovyx.gpars.GParsPool
 
 def cli = new CliBuilder( usage: 'server.groovy')
 cli.with {
     p longOpt:'port', required: true, args:1, argName:'port', 'Port to listen on'
     c longOpt:'config',required: true, args:1, argName:'config','JSON file configuration settings'
     t longOpt:'transaction-level',args:1, argName:'transaction-level', 'The JDBC transaction level to use for all connections.'
+    o longOpt:'override-timeout',args:1, argName:'override-timeout','Use an additional java level timeout to circumvent timeout bugs in different driver implementations.'
 }
 
 def myOptions = cli.parse(args)
@@ -52,6 +54,11 @@ byte commandServerStatus = -2
 def concurrentRequests = new AtomicInteger()
 def connectionsInLastHour = new AtomicInteger()
 
+
+Long overrideTimeoutLength = 0L;
+if(myOptions.o && myOptions.o?.isLong()) {
+    overrideTimeoutLength = (Long)myOptions.o.toLong();
+}
 
 def processResult = {sock->
     concurrentRequests.getAndAdd(1);
@@ -272,7 +279,20 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                         }
 
                         try {
-                            boolean r = s.execute();
+                            boolean r = false;
+                            if(myOptions.o) {
+                                try {
+                                    GParsPool.withPool {
+                                        def execer = {s.execute()}.async();
+                                        r = execer().get(overrideTimeoutLength,java.util.concurrent.TimeUnit.SECONDS);
+                                    }
+                                } catch(java.util.concurrent.ExecutionException e) {
+                                    throw e.cause
+                                }
+                            } else {
+                                r = s.execute();
+                            }
+
                             if (r) {
                                 dataOut.writeByte(1);
                                 dataOut.flush(); // need to flush here, due to round-trip in this protocol :-(
