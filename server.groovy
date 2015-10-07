@@ -280,7 +280,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
 
                         try {
                             boolean r = false;
-                            if(myOptions.o) {
+                            if(overrideTimeoutLength>0) {
                                 try {
                                     GParsPool.withPool {
                                         def execer = {s.execute()}.async();
@@ -324,7 +324,21 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                         String id = readString();
                         java.sql.ResultSet rs = results.get(id);
                         for(int row=0;row<batchSize;row++) {
-                            if (rs.next()) {
+                            boolean nextResult = false;
+                            if(overrideTimeoutLength>0) {
+                                try {
+                                    GParsPool.withPool {
+                                        def execer = {rs.next()}.async();
+                                        nextResult = execer().get(overrideTimeoutLength,java.util.concurrent.TimeUnit.SECONDS);
+                                    }
+                                } catch(java.util.concurrent.ExecutionException e) {
+                                    throw e.cause
+                                }
+                            } else {
+                                nextResult = rs.next();
+                            }
+
+                            if (nextResult) {
                                 dataOut.writeByte(1);
                             } else {
                                 dataOut.writeByte(0);
