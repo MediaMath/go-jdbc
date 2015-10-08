@@ -60,6 +60,10 @@ if(myOptions.o && myOptions.o?.isLong()) {
     overrideTimeoutLength = (Long)myOptions.o.toLong();
 }
 
+def logMessage = {aMessage->
+    println "${new Date().format('YYYY/MM/DD hh:mm:ss')} ${aMessage}"
+}
+
 def processResult = {sock->
     concurrentRequests.getAndAdd(1);
     sock.withStreams {inputStream,outputStream->
@@ -125,7 +129,7 @@ def processResult = {sock->
 Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                                 break;
                             case commandCloseConnection:
-                                println "Close connection received.";
+                                logMessage "Close connection received.";
                         }
                         break;
                     }
@@ -289,6 +293,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                                 } catch(java.util.concurrent.ExecutionException e) {
                                     throw e.cause;
                                 } catch(java.util.concurrent.TimeoutException e) {
+                                    logMessage "Concurrent timeout exception caught."
                                     throw new java.sql.SQLTimeoutException(e);
                                 }
                             } else {
@@ -338,6 +343,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                                     } catch(java.util.concurrent.ExecutionException e) {
                                         throw e.cause
                                     } catch(java.util.concurrent.TimeoutException e) {
+                                        logMessage "Concurrent timeout exception caught."
                                         throw new java.sql.SQLTimeoutException(e);
                                     }
 
@@ -485,6 +491,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
             } // End while
             
         } catch(e) {
+            logMessage "Caught exception:"
             e.printStackTrace()
         }finally {
             // Flush and close outputs and database connection
@@ -499,7 +506,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                     println "Clearing out resources: ${results.size()} results."
                     results.each {k,v->
                         try {
-                            v.s.close()
+                            v.close()
                         } catch(e) {
                             println "Error closing ${e}"
                         }
@@ -523,6 +530,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
     try {
         sock.close()
     } catch (e){
+        logMessage "Caught exception:"
         e.printStackTrace()
     } finally {
         concurrentRequests.getAndAdd(-1);
