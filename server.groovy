@@ -287,7 +287,9 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                                         r = execer().get(overrideTimeoutLength,java.util.concurrent.TimeUnit.SECONDS);
                                     }
                                 } catch(java.util.concurrent.ExecutionException e) {
-                                    throw e.cause
+                                    throw e.cause;
+                                } catch(java.util.concurrent.TimeoutException e) {
+                                    throw new java.sql.SQLTimeoutException(e);
                                 }
                             } else {
                                 r = s.execute();
@@ -325,23 +327,34 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                         java.sql.ResultSet rs = results.get(id);
                         for(int row=0;row<batchSize;row++) {
                             boolean nextResult = false;
-                            if(overrideTimeoutLength>0) {
-                                try {
-                                    GParsPool.withPool {
-                                        def execer = {rs.next()}.async();
-                                        nextResult = execer().get(overrideTimeoutLength,java.util.concurrent.TimeUnit.SECONDS);
-                                    }
-                                } catch(java.util.concurrent.ExecutionException e) {
-                                    throw e.cause
-                                }
-                            } else {
-                                nextResult = rs.next();
-                            }
+                            try {
+                                if(overrideTimeoutLength>0) {
 
-                            if (nextResult) {
-                                dataOut.writeByte(1);
-                            } else {
-                                dataOut.writeByte(0);
+                                    try {
+                                        GParsPool.withPool {
+                                            def execer = {rs.next()}.async();
+                                            nextResult = execer().get(overrideTimeoutLength,java.util.concurrent.TimeUnit.SECONDS);
+                                        }
+                                    } catch(java.util.concurrent.ExecutionException e) {
+                                        throw e.cause
+                                    } catch(java.util.concurrent.TimeoutException e) {
+                                        throw new java.sql.SQLTimeoutException(e);
+                                    }
+
+                                } else {
+                                    nextResult = rs.next();
+                                }
+
+                                if (nextResult) {
+                                    dataOut.writeByte(1);
+                                } else {
+                                    dataOut.writeByte(0);
+                                    break;
+                                }
+
+                            } catch (java.sql.SQLException e) {
+                                dataOut.writeByte(2);
+                                writeString(e.getMessage());
                                 break;
                             }
 

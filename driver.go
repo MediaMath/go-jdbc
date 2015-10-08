@@ -470,6 +470,13 @@ func (r *rows) bufferNext() error {
 		} else if b == 0 {
 			r.hasMore = false
 			break
+		} else if b == 2 {
+			if errMsg, e := r.ReadString(); e != nil {
+				return e
+			} else {
+				return fmt.Errorf(errMsg)
+			}
+
 		}
 
 		dest := make([]driver.Value, nameLength)

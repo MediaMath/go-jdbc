@@ -8,7 +8,7 @@ fi
 
 set -e
 
-groovy server.groovy -c test_config.json -p 7777 -o 30 &
+groovy server.groovy -c test_config.json -p 7777 -o 2 &
 GROOVY_SERVER_PID_THAT_CERTAINLY_WONT_CONFLICT_WITH_ANOTHER_PROCESS=$!
 
 function stopGroovyServer {
@@ -19,4 +19,4 @@ function stopGroovyServer {
 trap stopGroovyServer EXIT
 sleep 1 # Need a little lag till the server wakes up
 
-go test $@
+go test $@ -run 'TestTimeout*'

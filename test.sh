@@ -19,4 +19,4 @@ function stopGroovyServer {
 trap stopGroovyServer EXIT
 sleep 1 # Need a little lag till the server wakes up
 
-go test $@
+go test -run 'TestJDBC*' $@
