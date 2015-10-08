@@ -194,6 +194,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                     case commandCloseResultSet:
                         String id = readString();
                         java.sql.ResultSet rs = results.get(id);
+
                         if(rs) {
                             rs.close();
                             results.remove(id);
@@ -493,7 +494,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
         } catch(e) {
             logMessage "Caught exception:"
             e.printStackTrace()
-        }finally {
+        } finally {
             // Flush and close outputs and database connection
             try {
                 outputStream.close()

@@ -18,44 +18,56 @@ type Test struct {
 }
 
 func TestJDBCBasic(t *testing.T) {
-	fatalErr := func(e error) {
-		if e != nil {
-			t.Fatal(e)
-		}
-	}
+
 	db, err := sql.Open("jdbc", testConnString)
-	fatalErr(err)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 
 	_, err = db.Exec("drop table if exists test;")
-	fatalErr(err)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, err = db.Exec("create table test(Id int auto_increment primary key, Title varchar(255), Age int, Created datetime)")
-	fatalErr(err)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Parallel inserts
 	testTime := time.Now().Round(time.Second)
-	fatalErr(err)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stmt, err := db.Prepare("insert into test(Title,Age,Created) values(?,?,?)")
 	defer stmt.Close()
 
-	fatalErr(err)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	wg.Add(100)
 	for i := 0; i < 100; i++ {
 		go func(i int) {
 			defer wg.Done()
 			r, err := stmt.Exec(fmt.Sprintf("The %d", i), i, testTime)
-			fatalErr(err)
+			if err != nil {
+				t.Fatal(err)
+			}
 			_, err = r.RowsAffected()
-			fatalErr(err)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}(i)
 	}
 	wg.Wait()
 
 	// Select rows
 	rows, err := db.Query("select * from test")
-	fatalErr(err)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer rows.Close()
 
 	i := 0
