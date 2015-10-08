@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	_           = iota
-	commandDone = iota
+	_                = iota
+	commandDone byte = iota
 	commandPrepare
 	commandSetlong
 	commandSetstring
@@ -34,24 +34,9 @@ const (
 	commandSetnull
 	commandSetquerytimeout
 
-	commandCloseConnection = -1
-	commandServerStatus    = 254
+	commandCloseConnection byte = 255
+	commandServerStatus    byte = 254
 )
-
-//const (
-// _        = iota
-// TYPE_INT = iota
-// TYPE_STRING
-// TYPE_DOUBLE
-// TYPE_FLOAT
-// TYPE_TIME
-// TYPE_LONG
-// TYPE_SHORT
-// TYPE_BYTE
-// TYPE_BOOLEAN
-// TYPE_BIG_DECIMAL
-// TYPE_TIMESTAMP
-//)
 
 func init() {
 	sql.Register("jdbc", &Driver{})
@@ -63,6 +48,7 @@ type Driver struct {
 const (
 	paramTimeout         = "timeout"
 	paramQueryTimeout    = "queryTimeout"
+	readDeadline         = "readDeadline"
 	connectionTestString = "d67c184ff3c42e7b7a0bf2d4bca50340"
 	bufferSize           = 1000
 )
@@ -72,27 +58,14 @@ func ServerStatus(name string) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	var newConnection net.Conn
-
-	if timeoutRaw, ok := u.Query()[paramTimeout]; ok && len(timeoutRaw) > 0 {
-		timeout, e := strconv.ParseInt(timeoutRaw[0], 10, 64)
-		if e == nil {
-			newConnection, e = net.DialTimeout(u.Scheme, u.Host, time.Duration(timeout))
-		}
-	} else {
-		if newConnection, e = net.Dial(u.Scheme, u.Host); e == nil {
-			if tcp, ok := newConnection.(*net.TCPConn); ok {
-				e = tcp.SetLinger(-1)
-			}
-		}
-	}
+	newConnection, e := openNetConn(u)
 	if e != nil {
 		return "", e
 	}
-
 	defer newConnection.Close()
 
 	dc := &driverConnection{conn: newConnection}
+
 	if s, e := dc.ReadString(); e != nil {
 		return "", e
 	} else if s != connectionTestString {
@@ -106,25 +79,44 @@ func ServerStatus(name string) (string, error) {
 	return dc.ReadString()
 }
 
+func openNetConn(u *url.URL) (net.Conn, error) {
+	var (
+		newConnection net.Conn
+		e             error
+	)
+	if timeoutRaw, ok := u.Query()[paramTimeout]; ok && len(timeoutRaw) > 0 {
+		if timeout, e := strconv.ParseInt(timeoutRaw[0], 10, 64); e != nil {
+			return nil, e
+		} else {
+			if newConnection, e = net.DialTimeout(u.Scheme, u.Host, time.Duration(timeout)); e != nil {
+				return nil, e
+			}
+		}
+
+	} else {
+		if newConnection, e = net.Dial(u.Scheme, u.Host); e != nil {
+			return nil, e
+		}
+	}
+
+	if tcp, ok := newConnection.(*net.TCPConn); ok {
+		if e := tcp.SetLinger(-1); e != nil {
+			return nil, e
+		}
+
+	}
+
+	return newConnection, nil
+}
+
 func (j Driver) Open(name string) (driver.Conn, error) {
 	u, e := url.Parse(name)
 	if e != nil {
 		return nil, e
 	}
-
-	var newConnection net.Conn
-
-	if timeoutRaw, ok := u.Query()[paramTimeout]; ok && len(timeoutRaw) > 0 {
-		timeout, e := strconv.ParseInt(timeoutRaw[0], 10, 64)
-		if e == nil {
-			newConnection, e = net.DialTimeout(u.Scheme, u.Host, time.Duration(timeout))
-		}
-	} else {
-		if newConnection, e = net.Dial(u.Scheme, u.Host); e == nil {
-			if tcp, ok := newConnection.(*net.TCPConn); ok {
-				e = tcp.SetLinger(-1)
-			}
-		}
+	netConn, e := openNetConn(u)
+	if e != nil {
+		return nil, e
 	}
 
 	var queryTimeout int64
@@ -136,19 +128,21 @@ func (j Driver) Open(name string) (driver.Conn, error) {
 		queryTimeout = qt
 	}
 
-	if e != nil {
-		if newConnection != nil {
-			newConnection.Close()
+	dc := &driverConnection{conn: netConn}
+
+	if dl, ok := u.Query()[readDeadline]; ok && len(dl) > 0 {
+		qt, e := strconv.ParseInt(dl[0], 10, 64)
+		if e != nil {
+			return nil, e
 		}
-		return nil, e
+		dc.readTimeout = time.Duration(qt) * time.Second
 	}
 
-	dc := &driverConnection{conn: newConnection}
 	if s, e := dc.ReadString(); e != nil {
-		newConnection.Close()
+		netConn.Close()
 		return nil, e
 	} else if s != connectionTestString {
-		newConnection.Close()
+		netConn.Close()
 		return nil, fmt.Errorf("Connection test failed, %s != %s", s, connectionTestString)
 	}
 
@@ -164,16 +158,8 @@ type conn struct {
 }
 
 func (c *conn) Prepare(query string) (driver.Stmt, error) {
-	if e := c.dc.WriteByte(commandPrepare); e != nil {
-		return nil, e
-	}
-
 	id, _ := NewV4()
-	if e := c.dc.WriteString(id.String()); e != nil {
-		return nil, e
-	}
-
-	if e := c.dc.WriteString(query); e != nil {
+	if e := c.dc.Write(commandPrepare, id.String(), query); e != nil {
 		return nil, e
 	}
 
@@ -184,20 +170,17 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 	}
 
 	if c.queryTimeout > 0 {
-		var e error
-		if e = c.dc.WriteByte(commandSetquerytimeout); e == nil {
-			if e = c.dc.WriteString(id.String()); e == nil {
-				if e = c.dc.WriteInt64(c.queryTimeout); e == nil {
-					var errMsg string
-					if errMsg, e = c.dc.CheckError(); e == nil && errMsg != "" {
-						return nil, fmt.Errorf(errMsg)
-					}
-				}
-			}
-		}
-		if e != nil {
+
+		if e := c.dc.Write(commandSetquerytimeout, id.String(), c.queryTimeout); e != nil {
 			return nil, e
 		}
+
+		if errMsg, e := c.dc.CheckError(); e != nil {
+			return nil, e
+		} else if errMsg != "" {
+			return nil, fmt.Errorf(errMsg)
+		}
+
 	}
 
 	s := &stmt{conn: c, id: id.String(), query: query}
@@ -297,11 +280,7 @@ func (s *stmt) Close() error {
 	if !s.closed {
 		defer s.conn.putStmt(s)
 		s.closed = true
-		if e := s.conn.dc.WriteByte(commandCloseStatement); e != nil {
-			return e
-		}
-
-		if e := s.conn.dc.WriteString(s.id); e != nil {
+		if e := s.conn.dc.Write(commandCloseStatement, s.id); e != nil {
 			return e
 		}
 
@@ -320,18 +299,16 @@ func (s *stmt) NumInput() int {
 }
 
 func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
-	var (
-		b byte
-		e error
-	)
 
-	if e = s.stage1(args); e == nil {
-		if e = s.conn.dc.WriteByte(commandExecute); e == nil {
-			if e = s.conn.dc.WriteString(s.id); e == nil {
-				b, e = s.conn.dc.ReadByte()
-			}
-		}
+	if e := s.stage1(args); e != nil {
+		return nil, e
 	}
+
+	if e := s.conn.dc.Write(commandExecute, s.id); e != nil {
+		return nil, e
+	}
+
+	b, e := s.conn.dc.ReadByte()
 
 	if e != nil {
 		return nil, e
@@ -365,46 +342,27 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 
 func (s *stmt) stage1(args []driver.Value) (e error) {
 	for i, x := range args {
-		var e error
+		var (
+			e   error
+			idx int32
+		)
+		idx = int32(i + 1)
 		switch xT := x.(type) {
 		case int64:
-			if e = s.conn.dc.WriteByte(commandSetlong); e == nil {
-				if e = s.conn.dc.WriteString(s.id); e == nil {
-					if e = s.conn.dc.WriteInt32(int32(i + 1)); e == nil {
-						e = s.conn.dc.WriteInt64(xT)
-					}
-				}
-			}
+			e = s.conn.dc.Write(commandSetlong, s.id, idx, xT)
+
 		case string:
-			if e = s.conn.dc.WriteByte(commandSetstring); e == nil {
-				if e = s.conn.dc.WriteString(s.id); e == nil {
-					if e = s.conn.dc.WriteInt32(int32(i + 1)); e == nil {
-						e = s.conn.dc.WriteString(xT)
-					}
-				}
-			}
+			e = s.conn.dc.Write(commandSetstring, s.id, idx, xT)
+
 		case float64:
-			if e = s.conn.dc.WriteByte(commandSetdouble); e == nil {
-				if e = s.conn.dc.WriteString(s.id); e == nil {
-					if e = s.conn.dc.WriteInt32(int32(i + 1)); e == nil {
-						e = s.conn.dc.WriteFloat64(xT)
-					}
-				}
-			}
+			e = s.conn.dc.Write(commandSetdouble, s.id, idx, xT)
+
 		case time.Time:
-			if e = s.conn.dc.WriteByte(commandSettime); e == nil {
-				if e = s.conn.dc.WriteString(s.id); e == nil {
-					if e = s.conn.dc.WriteInt32(int32(i + 1)); e == nil {
-						e = s.conn.dc.WriteInt64(xT.UnixNano() / 1000000)
-					}
-				}
-			}
+			e = s.conn.dc.Write(commandSettime, s.id, idx, xT)
+
 		case nil:
-			if e = s.conn.dc.WriteByte(commandSetnull); e == nil {
-				if e = s.conn.dc.WriteString(s.id); e == nil {
-					e = s.conn.dc.WriteInt32(int32(i + 1))
-				}
-			}
+			e = s.conn.dc.Write(commandSetnull, s.id, idx)
+
 		default:
 			return fmt.Errorf("Unhandled param type(%d): %T %v %T %v\n", i, x, x, xT, xT)
 		}
@@ -541,13 +499,7 @@ func (r *rows) bufferNext() error {
 	r.currentRow = 0
 	nameLength := len(r.names)
 
-	var e error
-	if e = r.WriteByte(commandNext); e == nil {
-		if e = r.WriteInt32(int32(bufferSize)); e == nil {
-			e = r.WriteString(r.id)
-		}
-	}
-	if e != nil {
+	if e := r.Write(commandNext, int32(bufferSize), r.id); e != nil {
 		return e
 	}
 

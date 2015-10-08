@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql/driver"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -11,7 +12,15 @@ import (
 )
 
 type driverConnection struct {
-	conn net.Conn
+	conn        net.Conn
+	readTimeout time.Duration
+}
+
+func (j *driverConnection) setReadDeadline() error {
+	if j.readTimeout > 0 {
+		return j.conn.SetReadDeadline(time.Now().Add(j.readTimeout))
+	}
+	return nil
 }
 
 func (j *driverConnection) Close() error {
@@ -27,6 +36,10 @@ func (j *driverConnection) WriteByte(i byte) error {
 }
 
 func (j *driverConnection) ReadByte() (byte, error) {
+	if e := j.setReadDeadline(); e != nil {
+		return 0, e
+	}
+
 	buf := make([]byte, 1)
 	n, err := j.conn.Read(buf)
 	if err != nil || n != 1 {
@@ -58,6 +71,10 @@ func (j *driverConnection) WriteInt32(i int32) error {
 }
 
 func (j *driverConnection) ReadInt32() (int32, error) {
+	if e := j.setReadDeadline(); e != nil {
+		return 0, e
+	}
+
 	var i int32
 	if err := binary.Read(j.conn, binary.BigEndian, &i); err != nil {
 		log.Println("Driver connection error", err)
@@ -67,6 +84,10 @@ func (j *driverConnection) ReadInt32() (int32, error) {
 }
 
 func (j *driverConnection) ReadInt64() (int64, error) {
+	if e := j.setReadDeadline(); e != nil {
+		return 0, e
+	}
+
 	var i int64
 	if err := binary.Read(j.conn, binary.BigEndian, &i); err != nil {
 		log.Println("Driver connection error", err)
@@ -76,6 +97,10 @@ func (j *driverConnection) ReadInt64() (int64, error) {
 }
 
 func (j *driverConnection) ReadInt16() (int16, error) {
+	if e := j.setReadDeadline(); e != nil {
+		return 0, e
+	}
+
 	var i int16
 	if err := binary.Read(j.conn, binary.BigEndian, &i); err != nil {
 		log.Println("Driver connection error", err)
@@ -93,6 +118,10 @@ func (j *driverConnection) WriteFloat64(i float64) error {
 }
 
 func (j *driverConnection) ReadFloat32() (float32, error) {
+	if e := j.setReadDeadline(); e != nil {
+		return 0, e
+	}
+
 	var i float32
 	if err := binary.Read(j.conn, binary.BigEndian, &i); err != nil {
 		log.Println("Driver connection error", err)
@@ -102,6 +131,10 @@ func (j *driverConnection) ReadFloat32() (float32, error) {
 }
 
 func (j *driverConnection) ReadFloat64() (float64, error) {
+	if e := j.setReadDeadline(); e != nil {
+		return 0, e
+	}
+
 	var i float64
 	if err := binary.Read(j.conn, binary.BigEndian, &i); err != nil {
 		log.Println("Driver connection error", err)
@@ -123,6 +156,10 @@ func (j *driverConnection) WriteString(i string) (e error) {
 }
 
 func (j *driverConnection) ReadString() (string, error) {
+	if e := j.setReadDeadline(); e != nil {
+		return "", e
+	}
+
 	n, err := j.ReadInt32()
 	if err != nil {
 		log.Println("Driver connection error", err)
@@ -172,4 +209,31 @@ func (j *driverConnection) CheckError() (string, error) {
 	}
 	log.Printf("Driver connection error, unknown code: %d", int(returnCode))
 	return "", driver.ErrBadConn
+}
+
+func (j *driverConnection) Write(args ...interface{}) (e error) {
+	for _, data := range args {
+		switch t := data.(type) {
+		case byte:
+			e = j.WriteByte(t)
+		case int64:
+			e = j.WriteInt64(t)
+		case time.Time:
+			e = j.WriteTime(t)
+		case int32:
+			e = j.WriteInt32(t)
+		case float64:
+			e = j.WriteFloat64(t)
+		case string:
+			e = j.WriteString(t)
+		case bool:
+			e = j.WriteBool(t)
+		default:
+			return fmt.Errorf("Unexpected type %T", t)
+		}
+		if e != nil {
+			return
+		}
+	}
+	return
 }
