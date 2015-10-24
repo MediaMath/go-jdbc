@@ -11,6 +11,7 @@ cli.with {
     c longOpt:'config',required: true, args:1, argName:'config','JSON file configuration settings'
     t longOpt:'transaction-level',args:1, argName:'transaction-level', 'The JDBC transaction level to use for all connections.'
     o longOpt:'override-timeout',args:1, argName:'override-timeout','Use an additional java level timeout to circumvent timeout bugs in different driver implementations.'
+    f longOpt:'fetch-size', args:1, argName:'fetch-size', 'Adjust the fetch size on result sets.'
 }
 
 def myOptions = cli.parse(args)
@@ -58,6 +59,11 @@ def connectionsInLastHour = new AtomicInteger()
 Long overrideTimeoutLength = 0L;
 if(myOptions.o && myOptions.o?.isLong()) {
     overrideTimeoutLength = (Long)myOptions.o.toLong();
+}
+
+def fetchSize = 1000
+if(myOptions.f && myOptions.f?.isInteger()) {
+    fetchSize = myOptions.f.toInteger()
 }
 
 def logMessage = {aMessage->
@@ -305,7 +311,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                                 dataOut.writeByte(1);
                                 dataOut.flush(); // need to flush here, due to round-trip in this protocol :-(
                                 java.sql.ResultSet rs = s.getResultSet();
-                                rs.setFetchSize(1000);
+                                rs.setFetchSize(fetchSize);
                                 String id2 = readString();
                                 results.put(id2,rs);
                                 java.sql.ResultSetMetaData md = rs.getMetaData();
