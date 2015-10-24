@@ -2,16 +2,12 @@ import groovy.sql.Sql
 import groovy.json.JsonSlurper
 import groovy.json.JsonBuilder
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.ConcurrentHashMap
-import groovyx.gpars.GParsPool
 
 def cli = new CliBuilder( usage: 'server.groovy')
 cli.with {
     p longOpt:'port', required: true, args:1, argName:'port', 'Port to listen on'
     c longOpt:'config',required: true, args:1, argName:'config','JSON file configuration settings'
     t longOpt:'transaction-level',args:1, argName:'transaction-level', 'The JDBC transaction level to use for all connections.'
-    o longOpt:'override-timeout',args:1, argName:'override-timeout','Use an additional java level timeout to circumvent timeout bugs in different driver implementations.'
-    f longOpt:'fetch-size', args:1, argName:'fetch-size', 'Adjust the fetch size on result sets.'
 }
 
 def myOptions = cli.parse(args)
@@ -56,16 +52,6 @@ def concurrentRequests = new AtomicInteger()
 def connectionsInLastHour = new AtomicInteger()
 
 
-Long overrideTimeoutLength = 0L;
-if(myOptions.o && myOptions.o?.isLong()) {
-    overrideTimeoutLength = (Long)myOptions.o.toLong();
-}
-
-def fetchSize = 1000
-if(myOptions.f && myOptions.f?.isInteger()) {
-    fetchSize = myOptions.f.toInteger()
-}
-
 def logMessage = {aMessage->
     println "${new Date().format('YYYY/MM/DD hh:mm:ss')} ${aMessage}"
 }
@@ -77,6 +63,8 @@ def processResult = {sock->
         def stmts = [:]
         def results = [:]
         def resultMeta = [:]
+        def stmtsFetchSize = [:]
+        def resultsFetchSize = [:]
         try {
             DataInputStream dataIn = new DataInputStream(inputStream);
             DataOutputStream dataOut = new DataOutputStream(outputStream);
@@ -194,6 +182,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                             writeString(e.getMessage());
                         } finally {
                             stmts.remove(id);
+                            stmtsFetchSize.remove(id);
                         }
                         break;
 
@@ -205,15 +194,22 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                             rs.close();
                             results.remove(id);
                             resultMeta.remove(id);
+                            resultsFetchSize.remove(id);
                         }
                         break;
 
                     case commandPrepare:
                         String id = readString();
                         String q = readString();
+                        // Get the fetch size
+                        int fetchSize = dataIn.readInt();
+                        
+                        // getFetchSize may return 0, this will not work got calls to next()
+                        stmtsFetchSize[id] = fetchSize
                         
                         try {
                             java.sql.PreparedStatement s = connection.prepareStatement(q);
+                            s.setFetchSize(fetchSize);
                             def myStatment = ["s":s];
                             myStatment.insertUpdate = (q.toLowerCase() =~ /^(insert|update).*/).matches();
                             stmts.put(id,myStatment);
@@ -290,30 +286,18 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                         }
 
                         try {
-                            boolean r = false;
-                            if(overrideTimeoutLength>0) {
-                                try {
-                                    GParsPool.withPool {
-                                        def execer = {s.execute()}.async();
-                                        r = execer().get(overrideTimeoutLength,java.util.concurrent.TimeUnit.SECONDS);
-                                    }
-                                } catch(java.util.concurrent.ExecutionException e) {
-                                    throw e.cause;
-                                } catch(java.util.concurrent.TimeoutException e) {
-                                    logMessage "Concurrent timeout exception caught."
-                                    throw new java.sql.SQLTimeoutException(e);
-                                }
-                            } else {
-                                r = s.execute();
-                            }
+                            boolean r = s.execute();
 
                             if (r) {
                                 dataOut.writeByte(1);
-                                dataOut.flush(); // need to flush here, due to round-trip in this protocol :-(
+                                dataOut.flush(); // need to flush here, due to round-trip in this protocol
                                 java.sql.ResultSet rs = s.getResultSet();
-                                rs.setFetchSize(fetchSize);
+
                                 String id2 = readString();
+                                resultsFetchSize[id2]=stmtsFetchSize[id];
                                 results.put(id2,rs);
+
+                                // Send all column data over
                                 java.sql.ResultSetMetaData md = rs.getMetaData();
                                 resultMeta.put(id2,md);
                                 int n = md.getColumnCount();
@@ -334,29 +318,13 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                         break;
                         
                     case commandNext:
-                        int batchSize = dataIn.readInt();
                         String id = readString();
                         java.sql.ResultSet rs = results.get(id);
-                        for(int row=0;row<batchSize;row++) {
+                        int fetchSize = resultsFetchSize[id];
+                        for(int row=0;row<fetchSize;row++) {
                             boolean nextResult = false;
                             try {
-                                if(overrideTimeoutLength>0) {
-
-                                    try {
-                                        GParsPool.withPool {
-                                            def execer = {rs.next()}.async();
-                                            nextResult = execer().get(overrideTimeoutLength,java.util.concurrent.TimeUnit.SECONDS);
-                                        }
-                                    } catch(java.util.concurrent.ExecutionException e) {
-                                        throw e.cause
-                                    } catch(java.util.concurrent.TimeoutException e) {
-                                        logMessage "Concurrent timeout exception caught."
-                                        throw new java.sql.SQLTimeoutException(e);
-                                    }
-
-                                } else {
-                                    nextResult = rs.next();
-                                }
+                                nextResult = rs.next();
 
                                 if (nextResult) {
                                     dataOut.writeByte(1);

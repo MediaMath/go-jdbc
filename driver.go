@@ -48,9 +48,9 @@ type Driver struct {
 const (
 	paramTimeout         = "timeout"
 	paramQueryTimeout    = "queryTimeout"
-	readDeadline         = "readDeadline"
+	paramReadDeadline    = "readDeadline"
+	paramFetchSize       = "fetchSize"
 	connectionTestString = "d67c184ff3c42e7b7a0bf2d4bca50340"
-	bufferSize           = 1000
 )
 
 func ServerStatus(name string) (string, error) {
@@ -128,9 +128,18 @@ func (j Driver) Open(name string) (driver.Conn, error) {
 		queryTimeout = qt
 	}
 
+	fetchSize := int64(1000)
+	if fetchSizeRaw, ok := u.Query()[paramFetchSize]; ok && len(fetchSizeRaw) > 0 {
+		fs, e := strconv.ParseInt(fetchSizeRaw[0], 10, 64)
+		if e != nil {
+			return nil, e
+		}
+		fetchSize = fs
+	}
+
 	dc := &driverConnection{conn: netConn}
 
-	if dl, ok := u.Query()[readDeadline]; ok && len(dl) > 0 {
+	if dl, ok := u.Query()[paramReadDeadline]; ok && len(dl) > 0 {
 		qt, e := strconv.ParseInt(dl[0], 10, 64)
 		if e != nil {
 			return nil, e
@@ -146,7 +155,7 @@ func (j Driver) Open(name string) (driver.Conn, error) {
 		return nil, fmt.Errorf("Connection test failed, %s != %s", s, connectionTestString)
 	}
 
-	return &conn{openStmt: map[string]*stmt{}, dc: dc, queryTimeout: queryTimeout}, nil
+	return &conn{openStmt: map[string]*stmt{}, dc: dc, queryTimeout: queryTimeout, fetchSize: fetchSize}, nil
 }
 
 type conn struct {
@@ -154,12 +163,14 @@ type conn struct {
 	openStmtLock sync.Mutex
 	dc           *driverConnection
 	tx           *tx
+	fetchSize    int64
 	queryTimeout int64
 }
 
 func (c *conn) Prepare(query string) (driver.Stmt, error) {
 	id, _ := NewV4()
-	if e := c.dc.Write(commandPrepare, id.String(), query); e != nil {
+
+	if e := c.dc.Write(commandPrepare, id.String(), query, int32(c.fetchSize)); e != nil {
 		return nil, e
 	}
 
@@ -379,10 +390,8 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 		e error
 	)
 	if e = s.stage1(args); e == nil {
-		if e = s.conn.dc.WriteByte(commandExecute); e == nil {
-			if e = s.conn.dc.WriteString(s.id); e == nil {
-				b, e = s.conn.dc.ReadByte()
-			}
+		if e = s.conn.dc.Write(commandExecute, s.id); e == nil {
+			b, e = s.conn.dc.ReadByte()
 		}
 	}
 	if e != nil {
@@ -399,6 +408,7 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 
 	// Results
 	case 1:
+
 		var names, classes []string
 		id2, _ := NewV4()
 
@@ -430,6 +440,7 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 			names:            names,
 			classes:          classes,
 			hasMore:          true,
+			fetchSize:        s.conn.fetchSize,
 		}, nil
 
 	// Error
@@ -455,6 +466,7 @@ type rows struct {
 	buffer     [][]driver.Value
 	hasMore    bool
 	closed     bool
+	fetchSize  int64
 }
 
 func (r *rows) Columns() []string {
@@ -495,15 +507,15 @@ func (r *rows) Next(dest []driver.Value) error {
 }
 
 func (r *rows) bufferNext() error {
-	r.buffer = make([][]driver.Value, 0, bufferSize)
+	r.buffer = make([][]driver.Value, 0, r.fetchSize)
 	r.currentRow = 0
 	nameLength := len(r.names)
 
-	if e := r.Write(commandNext, int32(bufferSize), r.id); e != nil {
+	if e := r.Write(commandNext, r.id); e != nil {
 		return e
 	}
 
-	for i := 0; i < bufferSize; i++ {
+	for i := 0; i < int(r.fetchSize); i++ {
 		if b, e := r.ReadByte(); e != nil {
 			return e
 		} else if b == 0 {

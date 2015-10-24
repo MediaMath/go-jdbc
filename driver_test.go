@@ -24,7 +24,6 @@ func TestJDBCBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-
 	_, err = db.Exec("drop table if exists test;")
 	if err != nil {
 		t.Fatal(err)
@@ -297,30 +296,35 @@ func TestJDBCSystemStatus(t *testing.T) {
 
 }
 
-func TestTimeoutAtJavaLevel(t *testing.T) {
-	fatalErr := func(e error) {
-		if e != nil {
-			t.Fatal(e)
-		}
+func TestJDBCWithReadDeadline(t *testing.T) {
+	db, err := sql.Open("jdbc", fmt.Sprintf("%s?%s=%d", testConnString, paramReadDeadline, 10))
+	if err != nil {
+		t.Fatal(err)
 	}
-	db, err := sql.Open("jdbc", testConnString)
-	fatalErr(err)
 	defer db.Close()
 
 	_, err = db.Exec("drop table if exists test;")
-	fatalErr(err)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, err = db.Exec("create table test(Id int auto_increment primary key, Title varchar(255), Age int, Created datetime)")
-	fatalErr(err)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Parallel inserts
 	testTime := time.Now().Round(time.Second)
 	tx, err := db.Begin()
-	fatalErr(err)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stmt, err := tx.Prepare("insert into test(Title,Age,Created) values(?,?,?)")
 	defer stmt.Close()
 
-	fatalErr(err)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	groupSize := 1000
 	wg.Add(groupSize)
@@ -328,25 +332,27 @@ func TestTimeoutAtJavaLevel(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			r, err := stmt.Exec(fmt.Sprintf("The %d", i), i, testTime)
-			fatalErr(err)
+			if err != nil {
+				t.Fatal(err)
+			}
 			_, err = r.RowsAffected()
-			fatalErr(err)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}(i)
 	}
 	wg.Wait()
-	fatalErr(tx.Commit())
-
-	// Select rows
-	rows, err := db.Query("select t.* from test t join test t2")
-	if err == nil {
-		t.Fatalf("Expected query time out")
-	} else {
-		t.Log(err)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 
 	// This should work
-	rows, err = db.Query("select t.* from test t")
-	fatalErr(err)
+
+	rows, err := db.Query("select t.* from test t")
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	defer rows.Close()
 
 	i := 0
@@ -370,10 +376,11 @@ func TestTimeoutAtJavaLevel(t *testing.T) {
 	if i < groupSize {
 		t.Fatalf("Expected %d but got %d.", groupSize, i)
 	}
+
 }
 
-func TestJDBCWithReadDeadline(t *testing.T) {
-	db, err := sql.Open("jdbc", fmt.Sprintf("%s?%s=%d", testConnString, readDeadline, 10))
+func TestJDBCWithFetchSize(t *testing.T) {
+	db, err := sql.Open("jdbc", fmt.Sprintf("%s?%s=%d", testConnString, paramFetchSize, 500))
 	if err != nil {
 		t.Fatal(err)
 	}
