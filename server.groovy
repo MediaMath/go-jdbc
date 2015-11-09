@@ -56,6 +56,125 @@ def logMessage = {aMessage->
     println "${new Date().format('YYYY/MM/DD hh:mm:ss')} ${aMessage}"
 }
 
+
+
+def readString = {DataInputStream input->
+    int len = input.readInt();
+    byte[] buf = new byte[len];
+    input.readFully(buf);
+    return new String(buf,"UTF-8");
+}
+
+def writeString = {String s, DataOutputStream out->
+    if (s==null) {
+        s = "";
+    }
+    byte[] buf = s.getBytes("UTF-8");
+    out.writeInt(buf.length);
+    out.write(buf);
+}
+
+
+def processNext = {java.sql.ResultSetMetaData md, java.sql.ResultSet rs, int aFetchSize, DataOutputStream out ->
+    def wasNull = {
+        if(rs.wasNull()) {
+            out.writeByte(0);
+            return true;
+        }
+        out.writeByte(1);
+        return false;
+    }
+    for(int row=0;row<aFetchSize;row++) {
+        boolean nextResult = false;
+        try {
+            nextResult = rs.next();
+
+            if (nextResult) {
+                out.writeByte(1);
+            } else {
+                out.writeByte(0);
+                break;
+            }
+
+        } catch (java.sql.SQLException e) {
+            out.writeByte(2);
+            writeString(e.getMessage(),out);
+            break;
+        }
+
+        int n = md.getColumnCount();
+        for (int i=1; i<=n; i++) {
+            switch (md.getColumnClassName(i)) {
+            case java.lang.Integer.getName():
+                int val = rs.getInt(i);
+                if (wasNull()) {continue;}
+                out.writeInt(val);
+                break;
+                
+            case java.lang.String.getName():
+                String val = rs.getString(i);
+                if (wasNull()) {continue;}
+                writeString(val,out);
+                break;
+                
+            case java.lang.Double.getName():
+                double val = rs.getDouble(i);
+                if (wasNull()) {continue;}
+                out.writeDouble(val);
+                break;
+                
+            case java.lang.Float.getName():
+                float val = rs.getFloat(i);
+                if (wasNull()) {continue;}
+                out.writeFloat(val);
+                break;
+                
+            case java.sql.Date.getName():
+                java.sql.Date val = rs.getDate(i);
+                if (wasNull()) {continue;}
+                out.writeLong(i.getTime());
+                break;
+                
+            case java.sql.Timestamp.getName():
+                java.sql.Timestamp val = rs.getTimestamp(i);
+                if (wasNull()) {continue;}
+                out.writeLong(val.getTime());
+                break;
+                
+            case java.lang.Long.getName():
+                long val = rs.getLong(i);
+                if (wasNull()) {continue;}
+                out.writeLong(val);
+                break;
+                
+            case java.lang.Short.getName():
+                short val = rs.getShort(i);
+                if (wasNull()) {continue;}
+                out.writeShort(val);
+                break;
+                
+            case java.lang.Byte.getName():
+                byte val = rs.getByte(i);
+                if (wasNull()) {continue;}
+                out.writeByte(val);
+                break;
+                
+            case java.lang.Boolean.getName():
+                boolean val = rs.getBoolean(i);
+                if (wasNull()) {continue;}
+                out.writeByte(val ? 1 : 0);
+                break;
+                
+            case java.math.BigDecimal.getName():
+                java.math.BigDecimal val = rs.getBigDecimal(i);
+                if (wasNull()) {continue;}
+                writeString(val.toString(),out);
+                break;
+            }
+        }
+    }
+}
+
 def processResult = {sock->
     concurrentRequests.getAndAdd(1);
     sock.withStreams {inputStream,outputStream->
@@ -68,25 +187,6 @@ def processResult = {sock->
         try {
             DataInputStream dataIn = new DataInputStream(inputStream);
             DataOutputStream dataOut = new DataOutputStream(outputStream);
-
-            def writeString = {String s-> 
-                if (s==null) {
-                    s = "";
-                }
-                byte[] buf = s.getBytes("UTF-8");
-                dataOut.writeInt(buf.length);
-                dataOut.write(buf);
-            }
-
-            def readString = {
-                int len = dataIn.readInt();
-                byte[] buf = new byte[len];
-                try {
-                    dataIn.readFully(buf);
-                } catch(e) {
-                }
-                return new String(buf,"UTF-8");
-            }
 
             // Connect to database
             connection = java.sql.DriverManager.getConnection(config.url,config.user,config.password)
@@ -109,7 +209,7 @@ def processResult = {sock->
                     break
             }
 
-            writeString("d67c184ff3c42e7b7a0bf2d4bca50340");
+            writeString("d67c184ff3c42e7b7a0bf2d4bca50340",dataOut);
             dataOut.flush();
 
             byte selector;
@@ -120,7 +220,7 @@ def processResult = {sock->
                         switch(selector){
                             case commandServerStatus:
                                 writeString("""Concurrent Requests (including this): ${concurrentRequests.intValue()}
-Connections in the last hour: ${connectionsInLastHour.intValue()}""");
+Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                                 break;
                             case commandCloseConnection:
                                 logMessage "Close connection received.";
@@ -164,7 +264,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                         break;
 
                     case commandCloseStatement:
-                        String id = readString();
+                        String id = readString(dataIn);
                         def myStatment = stmts.get(id);
                         java.sql.PreparedStatement s = myStatment.s;
                         try {
@@ -187,7 +287,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                         break;
 
                     case commandCloseResultSet:
-                        String id = readString();
+                        String id = readString(dataIn);
                         java.sql.ResultSet rs = results.get(id);
 
                         if(rs) {
@@ -199,8 +299,8 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                         break;
 
                     case commandPrepare:
-                        String id = readString();
-                        String q = readString();
+                        String id = readString(dataIn);
+                        String q = readString(dataIn);
                         // Get the fetch size
                         int fetchSize = dataIn.readInt();
                         
@@ -221,7 +321,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                         break;
 
                     case commandSetQueryTimeout:
-                        String id = readString();
+                        String id = readString(dataIn);
                         int a = dataIn.readLong();
                         def myStatment = stmts.get(id);
                         try {
@@ -235,40 +335,40 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                         break;
 
                     case commandSetLong:
-                        String id = readString();
+                        String id = readString(dataIn);
                         int a = dataIn.readInt();
                         long b = dataIn.readLong();
                         stmts.get(id).s.setLong(a,b);
                         break;
 
                     case commandSetString:
-                        String id = readString();
+                        String id = readString(dataIn);
                         int a = dataIn.readInt();
-                        String b = readString();
+                        String b = readString(dataIn);
                         stmts.get(id).s.setString(a,b);
                         break;
 
                     case commandSetDouble:
-                        String id = readString();
+                        String id = readString(dataIn);
                         int a = dataIn.readInt();
                         double b = dataIn.readDouble();
                         stmts.get(id).s.setDouble(a,b);
                         break;
 
                     case commandSetTime:
-                        String id = readString();
+                        String id = readString(dataIn);
                         int a = dataIn.readInt();
                         long b = dataIn.readLong();
                         stmts.get(id).s.setTimestamp(a,new java.sql.Timestamp(b));
                         break;
                     case commandSetNull:
-                        String id = readString();
+                        String id = readString(dataIn);
                         int a = dataIn.readInt();
                         stmts.get(id).s.setObject(a,null);
                         break;    
                         
                     case commandExecute:
-                        String id = readString();
+                        String id = readString(dataIn);
                         def myStatement = stmts.get(id);
                         java.sql.PreparedStatement s = myStatement.s;
 
@@ -293,7 +393,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                                 dataOut.flush(); // need to flush here, due to round-trip in this protocol
                                 java.sql.ResultSet rs = s.getResultSet();
 
-                                String id2 = readString();
+                                String id2 = readString(dataIn);
                                 resultsFetchSize[id2]=stmtsFetchSize[id];
                                 results.put(id2,rs);
 
@@ -303,8 +403,8 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                                 int n = md.getColumnCount();
                                 dataOut.writeInt(n);
                                 for (int i=0; i<n; i++) {
-                                    writeString(md.getColumnName(i+1));
-                                    writeString(md.getColumnClassName(i+1));
+                                    writeString(md.getColumnName(i+1),dataOut);
+                                    writeString(md.getColumnClassName(i+1),dataOut);
                                 }
                             } else {
                                 dataOut.writeByte(0);
@@ -313,148 +413,19 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
                             }
                         } catch (java.sql.SQLException e) {
                             dataOut.writeByte(2);
-                            writeString(e.getMessage());
+                            writeString(e.getMessage(),dataOut);
                         }
                         break;
                         
                     case commandNext:
-                        String id = readString();
-                        java.sql.ResultSet rs = results.get(id);
-                        int fetchSize = resultsFetchSize[id];
-                        for(int row=0;row<fetchSize;row++) {
-                            boolean nextResult = false;
-                            try {
-                                nextResult = rs.next();
-
-                                if (nextResult) {
-                                    dataOut.writeByte(1);
-                                } else {
-                                    dataOut.writeByte(0);
-                                    break;
-                                }
-
-                            } catch (java.sql.SQLException e) {
-                                dataOut.writeByte(2);
-                                writeString(e.getMessage());
-                                break;
-                            }
-
-                            java.sql.ResultSetMetaData md = resultMeta.get(id);
-                            int n = md.getColumnCount();
-                            for (int i=1; i<=n; i++) {
-                                switch (md.getColumnClassName(i)) {
-                                case java.lang.Integer.getName():
-                                    int val = rs.getInt(i);
-                                    if (rs.wasNull()) {
-                                        dataOut.writeByte(0);
-                                        continue;
-                                    }
-                                    dataOut.writeByte(1);
-                                    dataOut.writeInt(val);
-                                    break;
-                                    
-                                case java.lang.String.getName():
-                                    String val = rs.getString(i);
-                                    if (rs.wasNull()) {
-                                        dataOut.writeByte(0);
-                                        continue;
-                                    }
-                                    dataOut.writeByte(1);
-                                    writeString(val);
-                                    break;
-                                    
-                                case java.lang.Double.getName():
-                                    double val = rs.getDouble(i);
-                                    if (rs.wasNull()) {
-                                        dataOut.writeByte(0);
-                                        continue;
-                                    }
-                                    dataOut.writeByte(1);
-                                    dataOut.writeDouble(val);
-                                    break;
-                                    
-                                case java.lang.Float.getName():
-                                    float val = rs.getFloat(i);
-                                    if (rs.wasNull()) {
-                                        dataOut.writeByte(0);
-                                        continue;
-                                    }
-                                    dataOut.writeByte(1);
-                                    dataOut.writeFloat(val);
-                                    break;
-                                    
-                                case java.sql.Date.getName():
-                                    java.sql.Date val = rs.getDate(i);
-                                    if (rs.wasNull()) {
-                                        dataOut.writeByte(0);
-                                        continue;
-                                    }
-                                    dataOut.writeByte(1);
-                                    dataOut.writeLong(i.getTime());
-                                    break;
-                                    
-                                case java.sql.Timestamp.getName():
-                                    java.sql.Timestamp val = rs.getTimestamp(i);
-                                    if (rs.wasNull()) {
-                                        dataOut.writeByte(0);
-                                        continue;
-                                    }
-                                    dataOut.writeByte(1);
-                                    dataOut.writeLong(val.getTime());
-                                    break;
-                                    
-                                case java.lang.Long.getName():
-                                    long val = rs.getLong(i);
-                                    if (rs.wasNull()) {
-                                        dataOut.writeByte(0);
-                                        continue;
-                                    }
-                                    dataOut.writeByte(1);
-                                    dataOut.writeLong(val);
-                                    break;
-                                    
-                                case java.lang.Short.getName():
-                                    short val = rs.getShort(i);
-                                    if (rs.wasNull()) {
-                                        dataOut.writeByte(0);
-                                        continue;
-                                    }
-                                    dataOut.writeByte(1);
-                                    dataOut.writeShort(val);
-                                    break;
-                                    
-                                case java.lang.Byte.getName():
-                                    byte val = rs.getByte(i);
-                                    if (rs.wasNull()) {
-                                        dataOut.writeByte(0);
-                                        continue;
-                                    }
-                                    dataOut.writeByte(1);
-                                    dataOut.writeByte(val);
-                                    break;
-                                    
-                                case java.lang.Boolean.getName():
-                                    boolean val = rs.getBoolean(i);
-                                    if (rs.wasNull()) {
-                                        dataOut.writeByte(0);
-                                        continue;
-                                    }
-                                    dataOut.writeByte(1);
-                                    dataOut.writeByte(val ? 1 : 0);
-                                    break;
-                                    
-                                case java.math.BigDecimal.getName():
-                                    java.math.BigDecimal val = rs.getBigDecimal(i);
-                                    if (rs.wasNull()) {
-                                        dataOut.writeByte(0);
-                                        continue;
-                                    }
-                                    dataOut.writeByte(1);
-                                    writeString(val.toString());
-                                    break;
-                                }
-                            }
-                        }
+                        String id = readString(dataIn);
+                        
+                        processNext(
+                            resultMeta.get(id),
+                            results.get(id),
+                            resultsFetchSize[id],
+                            dataOut
+                        )
                         break;
 
                     default:
@@ -511,6 +482,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""");
         concurrentRequests.getAndAdd(-1);
     }
 }
+
 
 def connectionTracker = []
 while (true) {
