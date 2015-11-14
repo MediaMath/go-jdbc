@@ -189,16 +189,16 @@ func (j *driverConnection) WriteBool(i bool) error {
 }
 
 // Common error approach
-func (j *driverConnection) CheckError() (string, error) {
+func (j *driverConnection) CheckError(good, bad byte) (string, error) {
 	returnCode, e := j.ReadByte()
 	if e != nil {
 		log.Println("Driver connection error", e)
 		return "", driver.ErrBadConn
 	}
 	switch returnCode {
-	case 0:
+	case good:
 		return "", nil
-	case 1:
+	case bad:
 		errMessage, e := j.ReadString()
 		if e != nil {
 			log.Println("Driver connection error", e)

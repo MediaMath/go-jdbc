@@ -33,6 +33,33 @@ const (
 	commandSettime
 	commandSetnull
 	commandSetquerytimeout
+	responseSuccess
+	responseFetchError
+	responseNull
+	responseFetchNoMore
+	responseTrue
+	responseFalse
+	responseNotNull
+	responseFetchHasResults
+	responseCommitSuccess
+	responseCommitError
+	responseRollbackSuccess
+	responseRollbackError
+	responseCloseStatementSuccess
+	responseCloseStatementError
+	responsePrepareSuccess
+	responsePrepareError
+	responseSetQueryTimeoutSuccess
+	responseSetQueryTimeoutError
+	responseBatchAddSuccess
+	responseBatchAddError
+	responseQueryHasResults
+	responseQueryNoResults
+	responseExecError
+	commandQuery
+	responseQueryError
+	responseExecHasUnexpectedResults
+	responseExecSuccess
 
 	commandCloseConnection byte = 255
 	commandServerStatus    byte = 254
@@ -174,7 +201,7 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 		return nil, e
 	}
 
-	if errMsg, e := c.dc.CheckError(); e != nil {
+	if errMsg, e := c.dc.CheckError(responsePrepareSuccess, responsePrepareError); e != nil {
 		return nil, e
 	} else if errMsg != "" {
 		return nil, fmt.Errorf(errMsg)
@@ -186,7 +213,7 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 			return nil, e
 		}
 
-		if errMsg, e := c.dc.CheckError(); e != nil {
+		if errMsg, e := c.dc.CheckError(responseSetQueryTimeoutSuccess, responseSetQueryTimeoutError); e != nil {
 			return nil, e
 		} else if errMsg != "" {
 			return nil, fmt.Errorf(errMsg)
@@ -246,11 +273,11 @@ func (t *tx) Commit() error {
 		return nil
 	}
 
-	if e := t.c.dc.WriteByte(12); e != nil {
+	if e := t.c.dc.WriteByte(commandCommitTransaction); e != nil {
 		return e
 	}
 
-	if msg, e := t.c.dc.CheckError(); e != nil {
+	if msg, e := t.c.dc.CheckError(responseCommitSuccess, responseCommitError); e != nil {
 		return e
 	} else if msg != "" {
 		return fmt.Errorf(msg)
@@ -263,11 +290,11 @@ func (t *tx) Rollback() error {
 	if !t.finish() {
 		return nil
 	}
-	if e := t.c.dc.WriteByte(13); e != nil {
+	if e := t.c.dc.WriteByte(commandRollbackTransaction); e != nil {
 		return e
 	}
 
-	if msg, e := t.c.dc.CheckError(); e != nil {
+	if msg, e := t.c.dc.CheckError(responseRollbackSuccess, responseRollbackError); e != nil {
 		return e
 	} else if msg != "" {
 		return fmt.Errorf(msg)
@@ -295,7 +322,7 @@ func (s *stmt) Close() error {
 			return e
 		}
 
-		if msg, e := s.conn.dc.CheckError(); e != nil {
+		if msg, e := s.conn.dc.CheckError(responseCloseStatementSuccess, responseCloseStatementError); e != nil {
 			return e
 		} else if msg != "" {
 			return fmt.Errorf(msg)
@@ -326,20 +353,27 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 	}
 
 	switch b {
-	case 0:
-		var c int32
-
+	case responseBatchAddSuccess:
 		if s.conn.tx == nil {
-			if c, e = s.conn.dc.ReadInt32(); e != nil {
-				return nil, e
-			} else if c < 0 {
-				c = 0
-			}
+			return nil, errors.New("Transaction batching happening when it should not have been.")
+		}
+		return result{s.conn.dc, int64(0)}, nil
+
+	case responseExecSuccess:
+		// Read number of inserts/updates
+		if s.conn.tx != nil {
+			return nil, errors.New("Executed without batching when it should have been batched.")
+		}
+		var c int32
+		if c, e = s.conn.dc.ReadInt32(); e != nil {
+			return nil, e
+		} else if c < 0 {
+			c = 0
 		}
 
 		return result{s.conn.dc, int64(c)}, nil
 
-	case 2:
+	case responseExecError, responseBatchAddError:
 		errMsg, e := s.conn.dc.ReadString()
 		if e != nil {
 			return nil, e
@@ -390,7 +424,7 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 		e error
 	)
 	if e = s.stage1(args); e == nil {
-		if e = s.conn.dc.Write(commandExecute, s.id); e == nil {
+		if e = s.conn.dc.Write(commandQuery, s.id); e == nil {
 			b, e = s.conn.dc.ReadByte()
 		}
 	}
@@ -400,15 +434,11 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 
 	switch b {
 	// No row
-	case 0:
-		if _, e := s.conn.dc.ReadInt32(); e != nil {
-			return nil, e
-		}
+	case responseQueryNoResults:
 		return &norows{}, nil
 
 	// Results
-	case 1:
-
+	case responseQueryHasResults:
 		var names, classes []string
 		id2, _ := NewV4()
 
@@ -420,6 +450,7 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 		if e != nil {
 			return nil, e
 		}
+
 		for i := 0; i < int(columns); i++ {
 			name, e := s.conn.dc.ReadString()
 			if e != nil {
@@ -444,7 +475,7 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 		}, nil
 
 	// Error
-	case 2:
+	case responseQueryError:
 		if errMsg, e := s.conn.dc.ReadString(); e != nil {
 			return nil, e
 		} else {
@@ -516,18 +547,27 @@ func (r *rows) bufferNext() error {
 	}
 
 	for i := 0; i < int(r.fetchSize); i++ {
-		if b, e := r.ReadByte(); e != nil {
+		b, e := r.ReadByte()
+		if e != nil {
 			return e
-		} else if b == 0 {
+		}
+		switch b {
+		case responseFetchHasResults:
+		case responseFetchNoMore:
 			r.hasMore = false
-			break
-		} else if b == 2 {
+		case responseFetchError:
 			if errMsg, e := r.ReadString(); e != nil {
 				return e
 			} else {
 				return fmt.Errorf(errMsg)
 			}
+		default:
+			log.Println("Unexpected response from driver %d", b)
+			return driver.ErrBadConn
+		}
 
+		if !r.hasMore {
+			break
 		}
 
 		dest := make([]driver.Value, nameLength)
@@ -536,8 +576,11 @@ func (r *rows) bufferNext() error {
 			dest[i] = nil
 			if b, err := r.ReadByte(); err != nil {
 				return err
-			} else if b != 1 {
+			} else if b == responseNull {
 				continue
+			} else if b != responseNotNull {
+				log.Println("Unexpected response from driver %d", b)
+				return driver.ErrBadConn
 			}
 
 			switch r.classes[i] {
@@ -587,7 +630,15 @@ func (r *rows) bufferNext() error {
 				if err != nil {
 					return err
 				}
-				dest[i] = (v == 1)
+				switch v {
+				case responseTrue:
+					dest[i] = true
+				case responseFalse:
+					dest[i] = false
+				default:
+					log.Println("Unexpected response from driver %d", b)
+					return driver.ErrBadConn
+				}
 
 			case "java.sql.Date":
 				v, err := r.ReadInt64()

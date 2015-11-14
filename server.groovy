@@ -48,6 +48,34 @@ byte commandSetQueryTimeout = 16
 byte commandCloseConnection = -1
 byte commandServerStatus = -2
 
+byte responseSuccess = 17
+byte responseFetchError = 18
+byte responseNull = 19
+byte responseFetchNoMore = 20
+byte responseTrue = 21
+byte responseFalse = 22
+byte responseNotNull = 23
+byte responseFetchHasResults = 24
+byte responseCommitSuccess = 25
+byte responseCommitError = 26
+byte responseRollbackSuccess = 27
+byte responseRollbackError = 28
+byte responseCloseStatementSuccess = 29
+byte responseCloseStatementError = 30
+byte responsePrepareSuccess = 31
+byte responsePrepareError = 32
+byte responseSetQueryTimeoutSuccess = 33
+byte responseSetQueryTimeoutError = 34
+byte responseBatchAddSuccess = 35
+byte responseBatchAddError = 36
+byte responseQueryHasResults = 37
+byte responseQueryNoResults = 38
+byte responseExecError = 39
+byte commandQuery = 40
+byte responseQueryError = 41
+byte responseExecHasUnexpectedResults = 42
+byte responseExecSuccess = 43
+
 def concurrentRequests = new AtomicInteger()
 def connectionsInLastHour = new AtomicInteger()
 
@@ -78,10 +106,10 @@ def writeString = {String s, DataOutputStream out->
 def processNext = {java.sql.ResultSetMetaData md, java.sql.ResultSet rs, int aFetchSize, DataOutputStream out ->
     def wasNull = {
         if(rs.wasNull()) {
-            out.writeByte(0);
+            out.writeByte(responseNull);
             return true;
         }
-        out.writeByte(1);
+        out.writeByte(responseNotNull);
         return false;
     }
     for(int row=0;row<aFetchSize;row++) {
@@ -90,14 +118,14 @@ def processNext = {java.sql.ResultSetMetaData md, java.sql.ResultSet rs, int aFe
             nextResult = rs.next();
 
             if (nextResult) {
-                out.writeByte(1);
+                out.writeByte(responseFetchHasResults);
             } else {
-                out.writeByte(0);
+                out.writeByte(responseFetchNoMore);
                 break;
             }
 
         } catch (java.sql.SQLException e) {
-            out.writeByte(2);
+            out.writeByte(responseFetchError);
             writeString(e.getMessage(),out);
             break;
         }
@@ -162,7 +190,7 @@ def processNext = {java.sql.ResultSetMetaData md, java.sql.ResultSet rs, int aFe
             case java.lang.Boolean.getName():
                 boolean val = rs.getBoolean(i);
                 if (wasNull()) {continue;}
-                out.writeByte(val ? 1 : 0);
+                out.writeByte(val ? responseTrue : responseFalse);
                 break;
                 
             case java.math.BigDecimal.getName():
@@ -244,9 +272,9 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                                 s.s.executeBatch();
                             }
                             connection.commit();
-                            dataOut.writeByte(0);
+                            dataOut.writeByte(responseCommitSuccess);
                         } catch (e) {
-                            dataOut.writeByte(1);
+                            dataOut.writeByte(responseCommitError);
                             writeString(e.getMessage()?:e.toString() );
                         }
                         connection.setAutoCommit(true);
@@ -255,9 +283,9 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                     case commandRollbackTransaction:
                         try {
                             connection.rollback();
-                            dataOut.writeByte(0);
+                            dataOut.writeByte(responseRollbackSuccess);
                         } catch (e) {
-                            dataOut.writeByte(1);
+                            dataOut.writeByte(responseRollbackError);
                             writeString(e.getMessage());
                         }
                         connection.setAutoCommit(true);
@@ -276,9 +304,9 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
 
                         try {
                             s.close();
-                            dataOut.writeByte(0);
+                            dataOut.writeByte(responseCloseStatementSuccess);
                         } catch (e) {
-                            dataOut.writeByte(1);
+                            dataOut.writeByte(responseCloseStatementError);
                             writeString(e.getMessage());
                         } finally {
                             stmts.remove(id);
@@ -313,9 +341,9 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                             def myStatment = ["s":s];
                             myStatment.insertUpdate = (q.toLowerCase() =~ /^(insert|update).*/).matches();
                             stmts.put(id,myStatment);
-                            dataOut.writeByte(0);
+                            dataOut.writeByte(responsePrepareSuccess);
                         } catch(java.sql.SQLSyntaxErrorException e) {
-                            dataOut.writeByte(1);
+                            dataOut.writeByte(responsePrepareError);
                             writeString(e.getMessage()?:e.toString());
                         }
                         break;
@@ -327,9 +355,9 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                         try {
                             java.sql.PreparedStatement s = myStatment.s;
                             s.setQueryTimeout(a);
-                            dataOut.writeByte(0);
+                            dataOut.writeByte(responseSetQueryTimeoutSuccess);
                         } catch (java.sql.SQLException e) {
-                            dataOut.writeByte(1);
+                            dataOut.writeByte(responseSetQueryTimeoutError);
                             writeString(e.getMessage());
                         }
                         break;
@@ -365,31 +393,18 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                         String id = readString(dataIn);
                         int a = dataIn.readInt();
                         stmts.get(id).s.setObject(a,null);
-                        break;    
-                        
-                    case commandExecute:
+                        break;
+
+                    case commandQuery:
                         String id = readString(dataIn);
                         def myStatement = stmts.get(id);
                         java.sql.PreparedStatement s = myStatement.s;
-
-                        if(!connection.getAutoCommit() && myStatement.insertUpdate) {
-                            try {
-                                s.addBatch();
-                                myStatement["hasBatch"] = true
-                                stmts.put(id,myStatement);
-                                dataOut.writeByte(0);
-                            } catch (e) {
-                                dataOut.writeByte(2);
-                                writeString(e.getMessage());
-                            }
-                            break;
-                        }
 
                         try {
                             boolean r = s.execute();
 
                             if (r) {
-                                dataOut.writeByte(1);
+                                dataOut.writeByte(responseQueryHasResults);
                                 dataOut.flush(); // need to flush here, due to round-trip in this protocol
                                 java.sql.ResultSet rs = s.getResultSet();
 
@@ -407,19 +422,49 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                                     writeString(md.getColumnClassName(i+1),dataOut);
                                 }
                             } else {
-                                dataOut.writeByte(0);
-                                int c = s.getUpdateCount();
-                                dataOut.writeInt(c);
+                                dataOut.writeByte(responseQueryNoResults);
                             }
                         } catch (java.sql.SQLException e) {
-                            dataOut.writeByte(2);
+                            dataOut.writeByte(responseQueryError);
                             writeString(e.getMessage(),dataOut);
+                        }
+                        break;
+                        
+                    case commandExecute:
+                        String id = readString(dataIn);
+                        def myStatement = stmts.get(id);
+                        java.sql.PreparedStatement s = myStatement.s;
+
+                        if(!connection.getAutoCommit()) {
+                            try {
+                                s.addBatch();
+                                myStatement["hasBatch"] = true
+                                stmts.put(id,myStatement);
+                                dataOut.writeByte(responseBatchAddSuccess);
+                            } catch (e) {
+                                dataOut.writeByte(responseBatchAddError);
+                                writeString(e.getMessage());
+                            }
+                        } else {
+                            try {
+                                boolean r = s.execute();
+
+                                if (r) {
+                                    dataOut.writeByte(responseExecHasUnexpectedResults);
+                                } else {
+                                    dataOut.writeByte(responseExecSuccess);
+                                    int c = s.getUpdateCount();
+                                    dataOut.writeInt(c);
+                                }
+                            } catch (java.sql.SQLException e) {
+                                dataOut.writeByte(responseExecError);
+                                writeString(e.getMessage(),dataOut);
+                            }
                         }
                         break;
                         
                     case commandNext:
                         String id = readString(dataIn);
-                        
                         processNext(
                             resultMeta.get(id),
                             results.get(id),
