@@ -275,7 +275,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                             dataOut.writeByte(responseCommitSuccess);
                         } catch (e) {
                             dataOut.writeByte(responseCommitError);
-                            writeString(e.getMessage()?:e.toString() );
+                            writeString(e.getMessage()?:e.toString(),dataOut);
                         }
                         connection.setAutoCommit(true);
                         break;
@@ -286,7 +286,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                             dataOut.writeByte(responseRollbackSuccess);
                         } catch (e) {
                             dataOut.writeByte(responseRollbackError);
-                            writeString(e.getMessage());
+                            writeString(e.getMessage(),dataOut);
                         }
                         connection.setAutoCommit(true);
                         break;
@@ -307,7 +307,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                             dataOut.writeByte(responseCloseStatementSuccess);
                         } catch (e) {
                             dataOut.writeByte(responseCloseStatementError);
-                            writeString(e.getMessage());
+                            writeString(e.getMessage(),dataOut);
                         } finally {
                             stmts.remove(id);
                             stmtsFetchSize.remove(id);
@@ -344,7 +344,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                             dataOut.writeByte(responsePrepareSuccess);
                         } catch(java.sql.SQLSyntaxErrorException e) {
                             dataOut.writeByte(responsePrepareError);
-                            writeString(e.getMessage()?:e.toString());
+                            writeString(e.getMessage()?:e.toString(),dataOut);
                         }
                         break;
 
@@ -358,7 +358,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                             dataOut.writeByte(responseSetQueryTimeoutSuccess);
                         } catch (java.sql.SQLException e) {
                             dataOut.writeByte(responseSetQueryTimeoutError);
-                            writeString(e.getMessage());
+                            writeString(e.getMessage(),dataOut);
                         }
                         break;
 
@@ -443,7 +443,7 @@ Connections in the last hour: ${connectionsInLastHour.intValue()}""",dataOut);
                                 dataOut.writeByte(responseBatchAddSuccess);
                             } catch (e) {
                                 dataOut.writeByte(responseBatchAddError);
-                                writeString(e.getMessage());
+                                writeString(e.getMessage(),dataOut);
                             }
                         } else {
                             try {
