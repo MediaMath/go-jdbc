@@ -160,7 +160,7 @@ def processNext = {java.sql.ResultSetMetaData md, java.sql.ResultSet rs, int aFe
             case java.sql.Date.getName():
                 java.sql.Date val = rs.getDate(i);
                 if (wasNull()) {continue;}
-                out.writeLong(i.getTime());
+                out.writeLong(val.getTime());
                 break;
                 
             case java.sql.Timestamp.getName():
